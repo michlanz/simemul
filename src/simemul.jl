@@ -1,4 +1,4 @@
-module SimEmul
+module simEmul
 
 # qui è dove definisco insieme le due simulazioni, quella che "emula" e quella che controlla il sistema emulato ("simula")
 # ovvero: simula il comportamento dell'ambiente se ricevesse azioni correttive esterne
@@ -14,7 +14,7 @@ println("############################################")
 println()
 
 using StableRNGs, Random
-#using ResumableFunctions
+using ResumableFunctions
 using CSV
 using JSON3
 using Distributions
@@ -26,39 +26,61 @@ using Statistics
 using PrettyTables
 
 println("## abbiamo importato, perdoni la lentezza ##")
-println()
 
 include("./input.jl")
-#include("./structures.jl")
-#include("./output.jl")
-#include("./prioritystore.jl")
-#include("./coresimulation.jl")
+include("./structures.jl")
+include("./selection.jl")
+include("./output.jl")
+include("./coresim.jl")
+#include("./aftermath.jl")
 
 using .inputdata
-#using .structures
-#using .postprocess
+using .structures
+using .selectionrules
+using .postprocess
 #using .showdash
-#using .prioritystore
-#using .coresimulation
+using .coresimulation
 
 export simem
 
-REPETITIONS = 10
+# ========     QUI IL PATH IN SALVATAGGIO     ==============================================
+#nominato qui
+# ========     DA QUI CREDI IN DIO CHE TI AIUTA     ========================================
 
-function simem()        ARRIVALGATE = false
-    #vettore_risultati inizializza
-    for i in 1:REPETITIONS
-        #immagino ragionevolmente che ciclerò per qualche parametro sia una versione di simulazione "tutto spento"
-        #e una a cui dico "se x allora y" e simili
-        #anche perchè si crea tutto qui in giro e poi sparisce
-        #pusha i risultati
-        println("## simulazione numero $i ##")
+const CLIENTNUM = 320
+
+const REPETITIONS::Int64 = 100
+const master_seed = 42
+seeds_rng = StableRNG(master_seed)
+seeds = rand(seeds_rng, UInt32, REPETITIONS)
+
+const inpath::String = "inputfile"
+const registry::String = "code_registry_3route_5client_norm.json"
+matrix::String = "lavoration_matrix.csv"
+
+#mettile dentro una funzione, anche se sono "variabili globali"
+codesnames,
+codesdistribution,
+codesroute,
+stationsnames,
+codessizevalues,
+codessizedistributions,
+codesprocessingtimes,
+stationscapacities = buildinput(inpath, registry, matrix)
+
+function simem(outpath::String)
+    for policy in selectionRules
+        outdir = joinpath(outpath, policy.name)
+
+        println()    
+        println("##### avvio emulatore ######################")
+        println("##### policy: $(policy.name) ######################")
+        println("##### repliche: $(length(seeds)) ########################")
+        println()
+
+        runSaveSim(seeds, stationsnames, stationscapacities, codesroute, codesnames, codesdistribution, codessizevalues, codessizedistributions, codesprocessingtimes, CLIENTNUM, policy.rule, outdir)
     end
-    
-    #leggi i risultati, srotola e salva i csv
 end
-
-#la funzione per salvare le figure va messa altrove cazzo
 
 
 end #quello del modulo

@@ -8,8 +8,7 @@ using ..Distributions
 
 export CLIENTNUM, buildinput
 
-CLIENTNUM = 320
-
+#FIXME non sono sicura di volere il clientum definito dentro l'input. non posso definirlo in un pannello di controllo?
 #FIXME ci sara un modo intelligente di esportare gli input
 function buildinput(path::String, registry::String, matrix::String)
     coderegistry = DataFrame(JSON3.read(read(joinpath(path, registry))))
@@ -22,7 +21,7 @@ function buildinput(path::String, registry::String, matrix::String)
     codessizevalues::Vector{Vector{Int64}} = [parse.(Int64, String.(collect(keys(obj)))) for obj in coderegistry.lot_distribution]
     codessizedistributions::Vector{Categorical} = [Categorical(Float64.(values(obj))) for obj in coderegistry.lot_distribution]
     codesprocessingtimes::Vector{Vector{Float64}} = [[lavmat[lavmat.CodeXX .== code, Symbol(s)][1] for s in route] for (code, route) in zip(codesnames, codesroute)]
-    stationscapacities::Vector{Int64} = [4, 3, 2, 3, 3, 2, 4, 3] #[2, 2, 1, 2, 1, 1, 2, 2]
+    stationscapacities::Vector{Int64} = [4, 3, 2, 3, 3, 2, 4, 3]
     return codesnames,
            codesdistribution,
            codesroute,
