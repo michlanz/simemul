@@ -20,13 +20,11 @@ using JSON3
 using Distributions
 using ConcurrentSim
 using DataFrames
-using StatsPlots
-using Plots
 using Statistics
-using PrettyTables
 
 println("## abbiamo importato, perdoni la lentezza ##")
 
+include("./config.jl")
 include("./input.jl")
 include("./structures.jl")
 include("./selection.jl")
@@ -34,6 +32,7 @@ include("./output.jl")
 include("./coresim.jl")
 #include("./aftermath.jl")
 
+using .configdata
 using .inputdata
 using .structures
 using .selectionrules
@@ -41,34 +40,33 @@ using .postprocess
 #using .showdash
 using .coresimulation
 
-export simem
+export simem,
+       SimConfig,
+       ImportData,
+       simConfig,
+       importData
 
 # ========     QUI IL PATH IN SALVATAGGIO     ==============================================
 #nominato qui
 # ========     DA QUI CREDI IN DIO CHE TI AIUTA     ========================================
 
-const CLIENTNUM = 320
+const simConfig = validateConfig(SimConfig(
+    clientNum = 320,
+    repetitions = 100,
+    masterSeed = 42,
+    inputPath = "inputfile",
+    registryFile = "code_registry_3route_5client_norm.json",
+    matrixFile = "lavoration_matrix.csv",
+    releaseBatchSize = 80,
+    releaseBatchSpacing = 40.0,
+    dueDateMinOffset = 16.0,
+    dueDateMaxOffset = 40.0,
+))
 
-const REPETITIONS::Int64 = 100
-const master_seed = 42
-seeds_rng = StableRNG(master_seed)
-seeds = rand(seeds_rng, UInt32, REPETITIONS)
+const importData = loadImportData(simConfig)
 
-const inpath::String = "inputfile"
-const registry::String = "code_registry_3route_5client_norm.json"
-matrix::String = "lavoration_matrix.csv"
-
-#mettile dentro una funzione, anche se sono "variabili globali"
-codesnames,
-codesdistribution,
-codesroute,
-stationsnames,
-codessizevalues,
-codessizedistributions,
-codesprocessingtimes,
-stationscapacities = buildinput(inpath, registry, matrix)
-
-function simem(outpath::String)
+function simem(outpath::String; cfg::SimConfig = simConfig, data::ImportData = importData)
+    seeds = buildSeeds(cfg)
     for policy in selectionRules
         outdir = joinpath(outpath, policy.name)
 
@@ -78,7 +76,7 @@ function simem(outpath::String)
         println("##### repliche: $(length(seeds)) ########################")
         println()
 
-        runSaveSim(seeds, stationsnames, stationscapacities, codesroute, codesnames, codesdistribution, codessizevalues, codessizedistributions, codesprocessingtimes, CLIENTNUM, policy.rule, outdir)
+        runSaveSim(cfg, data, seeds, policy.name, policy.rule, outdir)
     end
 end
 

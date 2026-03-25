@@ -169,9 +169,9 @@ end
 
 
 selectionRules = [
-    (name = "01.FIFO", rule = fifoRule),
-    (name = "02.LIFO", rule = lifoRule),
-    (name = "03.SIRO",  rule = siroRule),
+    (name = "01.SIRO",  rule = siroRule),    
+    (name = "02.FIFO", rule = fifoRule),
+    (name = "03.LIFO", rule = lifoRule),
     (name = "04.SPT",  rule = sptRule),
     (name = "05.LPT",  rule = lptRule),
     (name = "06.EDD",  rule = eddRule),

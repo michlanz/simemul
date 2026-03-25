@@ -1,0 +1,14 @@
+metric,title,f_statistic,p_value,eta_squared,significant_05,policy_count,replication_count
+simtime,Sim Time,70.8126671509965,0.0,0.39601594383243266,true,12,1200
+throughput,Throughput,70.6452160306882,0.0,0.3954498060477173,true,12,1200
+mean_wip_queue,Mean Queue WIP,581.4788588172895,0.0,0.843359954233753,true,12,1200
+mean_queue_length,Mean Queue Length,581.4788588172895,0.0,0.843359954233753,true,12,1200
+mean_saturation,Mean Saturation,73.5247905109509,0.0,0.4050399413986121,true,12,1200
+saturation_std,Saturation Std,2.609537010467894,0.0027407150505087685,0.02359233282226769,true,12,1200
+mean_makespan,Mean Makespan,415.9770897578569,0.0,0.7938841180061716,true,12,1200
+mean_lateness,Mean Lateness,376.12380936551216,0.0,0.7769165698717777,true,12,1200
+mean_tardiness,Mean Tardiness,555.6680288634875,0.0,0.8372680386835164,true,12,1200
+ontime_share,On-Time Share,330.54891437575026,0.0,0.7537332861632278,true,12,1200
+mean_queuetime,Mean Queue Time,574.9359779909997,0.0,0.8418592613648722,true,12,1200
+mean_processing_ratio,Mean Processing Ratio,750.8501736257957,0.0,0.8742504766063469,true,12,1200
+bottleneck_time_share,Bottleneck Time Share,197.57848392684517,0.0,0.6465719751857433,true,12,1200
