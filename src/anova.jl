@@ -9,6 +9,11 @@ using Distributions
 
 export performAnova, saveVisualSummary
 
+const anovaHighlightColors = (
+    best = :green3,
+    worst = :crimson,
+)
+
 function naturalSortKey(label)::Tuple
     text = String(label)
     prefix = replace(text, r"\d+" => "")
@@ -23,7 +28,7 @@ end
 
 function metricSpecs()
     return [
-        (column = :simtime, title = "Sim Time", higherIsBetter = false),
+        (column = :simtime, title = "Total Makespan", higherIsBetter = false),
         (column = :throughput, title = "Throughput", higherIsBetter = true),
         (column = :mean_wip_queue, title = "Mean Queue WIP", higherIsBetter = false),
         (column = :mean_queue_length, title = "Mean Queue Length", higherIsBetter = false),
@@ -39,6 +44,22 @@ function metricSpecs()
     ]
 end
 
+function visualSummaryRows()
+    return [
+        [:simtime, :throughput, :mean_saturation],
+        [:mean_lateness, :mean_tardiness, :ontime_share],
+        [:mean_queuetime, :mean_queue_length, :mean_makespan, :mean_processing_ratio],
+    ]
+end
+
+function visualSummarySpecs(specs)
+    specByColumn = Dict(spec.column => spec for spec in specs)
+    requestedColumns = [column for row in visualSummaryRows() for column in row]
+    missingColumns = filter(column -> !haskey(specByColumn, column), requestedColumns)
+    isempty(missingColumns) || error("Metriche mancanti nel visual summary: $(missingColumns)")
+    return [specByColumn[column] for column in requestedColumns]
+end
+
 function standardPlotKwargs()
     return (
         titlefont = font(13),
@@ -48,6 +69,7 @@ function standardPlotKwargs()
         grid = :y,
         gridalpha = 0.18,
         framestyle = :box,
+        top_margin = 5 * Plots.mm,
     )
 end
 
@@ -224,8 +246,24 @@ function highlightIndices(meanValues::Vector{Float64}, higherIsBetter::Bool)
     return bestIdx, worstIdx
 end
 
+function roleSeriesData(valuesByPolicy::Vector{Vector{Float64}}, roles::Vector{Symbol}, targetRole::Symbol)
+    xValues = Int[]
+    yValues = Float64[]
+
+    for (idx, values) in enumerate(valuesByPolicy)
+        roles[idx] == targetRole || continue
+        append!(xValues, fill(idx, length(values)))
+        append!(yValues, values)
+    end
+
+    return xValues, yValues
+end
+
 function plotAnovaMetricBox(df::DataFrame, spec, overviewLookup::Dict{Symbol, NamedTuple})
     policies = orderedPolicies(df.policy)
+    valuesByPolicy = [Float64.(df[df.policy .== policy, spec.column]) for policy in policies]
+    meanValues = [mean(values) for values in valuesByPolicy]
+    roles = computeHighlightRoles(meanValues, spec.higherIsBetter)
 
     p = plot(;
         title = metricTitleWithTest(spec, overviewLookup),
@@ -235,37 +273,76 @@ function plotAnovaMetricBox(df::DataFrame, spec, overviewLookup::Dict{Symbol, Na
         standardPlotKwargs()...,
     )
 
-    for (idx, policy) in enumerate(policies)
-        values = Float64.(df[df.policy .== policy, spec.column])
-        boxplot!(
-            p,
-            fill(idx, length(values)),
-            values;
-            label = false,
-            fillalpha = 0.8,
-        )
-    end
+    midX, midY = roleSeriesData(valuesByPolicy, roles, :mid)
+    !isempty(midX) && boxplot!(p, midX, midY; label = false)
+
+    bestX, bestY = roleSeriesData(valuesByPolicy, roles, :best)
+    !isempty(bestX) && boxplot!(
+        p,
+        bestX,
+        bestY;
+        label = false,
+        seriescolor = anovaHighlightColors.best,
+    )
+
+    worstX, worstY = roleSeriesData(valuesByPolicy, roles, :worst)
+    !isempty(worstX) && boxplot!(
+        p,
+        worstX,
+        worstY;
+        label = false,
+        seriescolor = anovaHighlightColors.worst,
+    )
 
     return p
 end
 
+function emptySummaryCell()
+    return plot(
+        [0.5],
+        [0.5];
+        seriestype = :scatter,
+        markersize = 0,
+        markerstrokewidth = 0,
+        markercolor = :white,
+        color = :white,
+        label = false,
+        xlims = (0.0, 1.0),
+        ylims = (0.0, 1.0),
+        showaxis = false,
+        framestyle = :none,
+        grid = false,
+        left_margin = 0 * Plots.mm,
+        right_margin = 0 * Plots.mm,
+        top_margin = 0 * Plots.mm,
+        bottom_margin = 0 * Plots.mm,
+    )
+end
+
 function saveVisualSummary(outpath::String, df::DataFrame, specs, overviewLookup::Dict{Symbol, NamedTuple})
     println("##### costruendo visual summary ############")
-    plots = [plotAnovaMetricBox(df, spec, overviewLookup) for spec in specs]
-    cols = 4
-    rows = ceil(Int, length(plots) / cols)
+    summarySpecs = visualSummarySpecs(specs)
+    summaryPlots = [plotAnovaMetricBox(df, spec, overviewLookup) for spec in summarySpecs]
+    blankCell = emptySummaryCell()
+    plots = vcat(
+        summaryPlots[1:3],
+        [blankCell],
+        summaryPlots[4:6],
+        [blankCell],
+        summaryPlots[7:10],
+    )
 
     savefig(
         plot(
             plots...;
-            layout = (rows, cols),
-            size = (4200, max(1800, 650 * rows)),
-            plot_title = "ANOVA Visual Summary 1 - Boxplots",
+            layout = (3, 4),
+            size = (4200, 2400),
+            plot_title = "ANOVA Visual Summary - Boxplots",
             plot_titlefont = font(24),
             left_margin = 10 * Plots.mm,
             bottom_margin = 12 * Plots.mm,
         ),
-        joinpath(outpath, "00.visual_summary1.png"),
+        joinpath(outpath, "00.visual_summary.png"),
     )
     println("##### visual summary salvato ###############")
 end
@@ -274,7 +351,7 @@ function saveVisualSummary(outpath::String)
     df = collectAnovaRefs(outpath)
     specs = metricSpecs()
     overviewLookup = buildAnovaOverviewLookup(buildAnovaOverview(df, specs))
-    saveVisualSummary1(outpath, df, specs, overviewLookup)
+    saveVisualSummary(outpath, df, specs, overviewLookup)
 end
 
 function performAnova(outpath::String)

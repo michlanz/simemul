@@ -1,5 +1,5 @@
 metric,title,f_statistic,p_value,eta_squared,significant_05,policy_count,replication_count
-simtime,Sim Time,70.8126671509965,0.0,0.39601594383243266,true,12,1200
+simtime,Total Makespan,70.8126671509965,0.0,0.39601594383243266,true,12,1200
 throughput,Throughput,70.6452160306882,0.0,0.3954498060477173,true,12,1200
 mean_wip_queue,Mean Queue WIP,581.4788588172895,0.0,0.843359954233753,true,12,1200
 mean_queue_length,Mean Queue Length,581.4788588172895,0.0,0.843359954233753,true,12,1200

@@ -86,6 +86,7 @@ function minSlackRule(env::Environment, station::Station, clients::Vector{Client
     return selectedNext
 end
 
+#(tempo residuo alla due date) / (lavoro residuo): piu e basso, piu il job e critico.
 function criticalRatioRule(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
     selectedNext = 0
     lowestRatio = Inf
@@ -102,6 +103,7 @@ function criticalRatioRule(env::Environment, station::Station, clients::Vector{C
     return selectedNext
 end
 
+# Fewest Operations Remaining: priorita al job con meno operazioni da fare.
 function fopnrRule(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
     selectedNext = 0
     fewestOps = Inf
@@ -118,6 +120,7 @@ function fopnrRule(env::Environment, station::Station, clients::Vector{Client}, 
     return selectedNext
 end
 
+# Most Operations Remaining: priorita al job con piu operazioni da fare.
 function mopnrRule(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
     selectedNext = 0
     mostOps = 0
@@ -134,6 +137,7 @@ function mopnrRule(env::Environment, station::Station, clients::Vector{Client}, 
     return selectedNext
 end
 
+# Least Work Remaining: priorita al job con meno tempo di lavoro residuo.
 function lwrkRule(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
     selectedNext = 0
     leastWork = Inf
@@ -150,6 +154,7 @@ function lwrkRule(env::Environment, station::Station, clients::Vector{Client}, r
     return selectedNext
 end
 
+# Most Work Remaining: priorita al job con piu tempo di lavoro residuo.
 function mwrkRule(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
     selectedNext = 0
     mostWork = 0
