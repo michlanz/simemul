@@ -2,6 +2,7 @@ module showdash
 
 using CSV
 using DataFrames
+ENV["GKSwstype"] = "100" # Save plots without opening GR windows.
 using StatsPlots
 using Plots
 

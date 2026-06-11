@@ -90,3 +90,21 @@ Una parte del lavoro recente ha riguardato anche la definizione dei primi indica
 Lo stato di avanzamento raggiunto può quindi essere sintetizzato come segue. È disponibile una prima versione funzionante dell’emulatore deterministico, capace di costruire il sistema, generare i clienti, farli avanzare lungo le route, applicare una regola di priorità selezionata e salvare gli output principali di una campagna di repliche. Rimangono ancora da rifinire alcuni aspetti tecnici secondari, tra cui l’allineamento completo tra postprocess e moduli di visualizzazione, la sistemazione definitiva delle misure di saturazione, la registrazione esplicita dei tempi computazionali delle repliche, la formalizzazione delle configurazioni di scenario e la gestione automatica di campagne su configurazioni multiple e insiemi di policy. Tuttavia, il risultato già conseguito è metodologicamente rilevante, perché segna il passaggio da una fase di sola progettazione concettuale a una fase di implementazione eseguibile, sulla quale potranno essere innestate in modo progressivo le estensioni future.
 
 In questo senso, la fase attuale del lavoro non coincide ancora con la piena disponibilità del simulatore perturbato e delle logiche adattive finali, ma costituisce la chiusura del primo ciclo fondamentale del progetto: la costruzione di un emulatore coerente, modulare e replicabile, che rende finalmente possibile l’avvio di test comparativi sistematici tra politiche di priorità differenti e prepara il terreno alla successiva estensione verso scenari più complessi e perturbati.
+
+11.06
+La fase successiva riguarda l'introduzione di regole adattive di dispatching, mantenendo il codice controllabile da `main.jl` tramite una lista di `runModes`. L'obiettivo non e sostituire le policy statiche, ma costruire campagne dedicate per calibrare soglie semplici e verificare se il comportamento adattivo migliori davvero le prestazioni rispetto alle regole statiche gia testate.
+
+Le campagne adaptive aperte sono:
+
+1. Campagna adaptive SPT:
+   attiva SPT quando la coda della stazione supera una soglia minima configurabile. La soglia viene esplorata da `adaptiveQueueMin` a `adaptiveQueueMax`.
+
+2. Campagna adaptive SLACK:
+   attiva MINSLACK quando almeno un job in coda ha slack residuo sotto una soglia configurabile. La soglia viene esplorata da `adaptiveSlackMax` a `adaptiveSlackMin`, con passo `adaptiveSlackStep`.
+
+3. Campagna adaptive concorrente:
+   attiva sia il trigger di coda sia il trigger di slack. In caso di conflitto, l'ordine di precedenza e definito da `adaptivePriorityOrder`, quindi si possono confrontare sia la precedenza SPT sia la precedenza MINSLACK.
+
+Il confronto finale dovra rispondere alla domanda operativa principale: le regole adaptive migliorano davvero rispetto alle regole statiche, oppure introducono complessita senza beneficio robusto? La valutazione andra fatta sugli stessi KPI gia usati per il confronto tra policy statiche, in particolare makespan, on-time share, tardiness, waiting time e processing ratio.
+
+Resta aperta anche una replica futura della campagna con tempi non deterministici o distribuzioni sui tempi di lavorazione. Questa seconda fase servira a capire se le soglie adaptive scelte sul caso controllato restano valide quando il sistema diventa piu realistico e perturbato.

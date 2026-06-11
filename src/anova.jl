@@ -3,6 +3,7 @@ module showanova
 using CSV
 using DataFrames
 using Statistics
+ENV["GKSwstype"] = "100" # Save plots without opening GR windows.
 using StatsPlots
 using Plots
 using Distributions
@@ -16,14 +17,14 @@ const anovaHighlightColors = (
 
 function naturalSortKey(label)::Tuple
     text = String(label)
-    prefix = replace(text, r"\d+" => "")
-    suffixMatch = match(r"(\d+)(?!.*\d)", text)
-    suffixNum = suffixMatch === nothing ? typemax(Int) : parse(Int, suffixMatch.captures[1])
-    return (prefix, suffixNum, text)
+    prefix = match(r"^[^\d]*", text).match          # tutto prima del primo numero
+    numMatch = match(r"(\d+(?:\.\d+)?)", text)      # primo numero, anche decimale
+    numVal = numMatch === nothing ? typemax(Float64) : parse(Float64, numMatch.captures[1])
+    return (prefix, numVal, text)
 end
 
 function orderedPolicies(labels)
-    return sort(unique(String.(labels)))
+    return sort(unique(String.(labels)), by = naturalSortKey)  # usa naturalSortKey!
 end
 
 function metricSpecs()

@@ -21,6 +21,12 @@ Base.@kwdef struct SimConfig
     releaseBatchSpacing::Float64 = 40.0
     dueDateMinOffset::Float64 = 16.0
     dueDateMaxOffset::Float64 = 40.0
+    adaptivePriorityOrder::Tuple{Symbol, Symbol} = (:SPT, :MINSLACK)
+    adaptiveQueueMin::Int64 = 3
+    adaptiveQueueMax::Int64 = 60
+    adaptiveSlackMin::Float64 = 0.0
+    adaptiveSlackMax::Float64 = 15.0
+    adaptiveSlackStep::Float64 = 0.2
 end
 
 const DashboardColors = (
@@ -39,6 +45,11 @@ function validateConfig(cfg::SimConfig)::SimConfig
     cfg.releaseBatchSpacing >= 0.0 || error("releaseBatchSpacing non puo essere negativo")
     cfg.dueDateMinOffset >= 0.0 || error("dueDateMinOffset non puo essere negativo")
     cfg.dueDateMaxOffset >= cfg.dueDateMinOffset || error("dueDateMaxOffset deve essere maggiore o uguale a dueDateMinOffset")
+    Set(cfg.adaptivePriorityOrder) == Set([:SPT, :MINSLACK]) || error("adaptivePriorityOrder deve contenere esattamente :SPT e :MINSLACK")
+    cfg.adaptiveQueueMin > 0 || error("adaptiveQueueMin deve essere positivo")
+    cfg.adaptiveQueueMax >= cfg.adaptiveQueueMin || error("adaptiveQueueMax deve essere maggiore o uguale a adaptiveQueueMin")
+    cfg.adaptiveSlackStep > 0.0 || error("adaptiveSlackStep deve essere positivo")
+    cfg.adaptiveSlackMax >= cfg.adaptiveSlackMin || error("adaptiveSlackMax deve essere maggiore o uguale a adaptiveSlackMin")
     return cfg
 end
 

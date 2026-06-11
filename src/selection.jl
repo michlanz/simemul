@@ -5,12 +5,36 @@ using ..ConcurrentSim
 using ..structures
 
 export selectNext,
+       adaptiveRule,
        selectionRules
+
+struct AdaptiveSelectionRule
+    queueThreshold::Union{Nothing, Int64}
+    slackThreshold::Union{Nothing, Float64}
+    adaptivePriorityOrder::Tuple{Symbol, Symbol}
+end
       
 function selectNext(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG, priorityRule)::Int
     @assert !isempty(station.waiting_queue) "selectNext chiamata con waiting_queue vuota"
     selectedQueuePos = priorityRule(env, station, clients, rng)
     return selectedQueuePos
+end
+
+function selectNext(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG, priorityRule::AdaptiveSelectionRule)::Int
+    @assert !isempty(station.waiting_queue) "selectNext chiamata con waiting_queue vuota"
+
+    queueTriggered = priorityRule.queueThreshold !== nothing && length(station.waiting_queue) >= priorityRule.queueThreshold
+    slackTriggered = priorityRule.slackThreshold !== nothing && queueMinSlack(env, station, clients) <= priorityRule.slackThreshold
+
+    if queueTriggered && slackTriggered
+        return selectWithAdaptivePriority(priorityRule.adaptivePriorityOrder[1], env, station, clients, rng)
+    elseif queueTriggered
+        return sptRule(env, station, clients, rng)
+    elseif slackTriggered
+        return minSlackRule(env, station, clients, rng)
+    end
+
+    return fifoRule(env, station, clients, rng)
 end
 
 function fifoRule(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
@@ -84,6 +108,30 @@ function minSlackRule(env::Environment, station::Station, clients::Vector{Client
         end
     end
     return selectedNext
+end
+
+function queueMinSlack(env::Environment, station::Station, clients::Vector{Client})::Float64
+    leastSlack = Inf
+
+    for pos in eachindex(station.waiting_queue)
+        client = clients[station.waiting_queue[pos].client_id]
+        slack = client.due_date - now(env) - sum(client.expected_processing_time[client.current_station:end])
+        leastSlack = min(leastSlack, slack)
+    end
+
+    return leastSlack
+end
+
+function selectWithAdaptivePriority(priority::Symbol, env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
+    priority == :SPT && return sptRule(env, station, clients, rng)
+    priority == :MINSLACK && return minSlackRule(env, station, clients, rng)
+    error("Priorita adaptive non valida: $(priority)")
+end
+
+function adaptiveRule(queueThreshold, slackThreshold, cfg)::AdaptiveSelectionRule
+    cleanQueueThreshold = queueThreshold === nothing ? nothing : Int64(queueThreshold)
+    cleanSlackThreshold = slackThreshold === nothing ? nothing : Float64(slackThreshold)
+    return AdaptiveSelectionRule(cleanQueueThreshold, cleanSlackThreshold, cfg.adaptivePriorityOrder)
 end
 
 #(tempo residuo alla due date) / (lavoro residuo): piu e basso, piu il job e critico.

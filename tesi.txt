@@ -1,0 +1,300 @@
+# Implementazione del modello a eventi discreti per un job shop orientato all'estensione verso digital twin
+
+## Inquadramento del lavoro
+
+Il presente lavoro si colloca nella fase di implementazione del modello operativo del progetto, a valle di una precedente attività dedicata al trattamento dei dati e alla loro integrazione. Se nella pubblicazione precedente l'attenzione era rivolta soprattutto alla costruzione della base informativa necessaria a rappresentare il sistema produttivo, in questa fase il contributo principale consiste nella realizzazione di un ambiente di simulazione a eventi discreti capace di riprodurre il comportamento di un job shop, confrontare differenti logiche decisionali e predisporre il terreno per una successiva evoluzione in ottica digital twin.
+
+L'obiettivo non è soltanto ottenere un simulatore eseguibile, ma costruire una baseline metodologicamente solida, leggibile e replicabile, sulla quale innestare in seguito perturbazioni più realistiche, regole di controllo adattive e collegamenti più stretti con il sistema reale. Per questo motivo il lavoro si concentra in primo luogo sulla definizione di un'architettura modulare, sulla separazione delle responsabilità tra i diversi componenti software e sulla produzione sistematica di indicatori utili alla valutazione delle prestazioni.
+
+Dal punto di vista concettuale, il modello rappresenta un sistema produttivo di tipo job shop in cui gli ordini di produzione attraversano una sequenza di stazioni secondo route predefinite. La simulazione permette di osservare come la scelta della regola di dispatching influenzi le code, i tempi di attesa, il makespan, la puntualità rispetto alle scadenze e il grado di utilizzo delle risorse. In questo senso, la piattaforma sviluppata non è solo uno strumento di calcolo, ma un ambiente sperimentale controllato per analizzare il comportamento dinamico del sistema.
+
+## Obiettivi implementativi e logica progettuale
+
+La logica progettuale adottata in questa fase parte da una scelta precisa: prima di introdurre meccanismi avanzati di controllo o scenari fortemente perturbati, è necessario disporre di un modello di riferimento stabile e comprensibile. La baseline realizzata nel repository ha quindi tre finalità principali.
+
+La prima finalità è rappresentativa. Il modello deve descrivere in modo coerente il flusso degli ordini di produzione attraverso il sistema, tenendo traccia del loro rilascio, del loro passaggio nelle code, dell'avvio delle lavorazioni e della loro uscita dal sistema.
+
+La seconda finalità è sperimentale. Il modello deve consentire di confrontare in modo sistematico diverse regole di priorità, trattando la politica di dispatching come una vera variabile sperimentale e non come un dettaglio incorporato nella logica interna del codice.
+
+La terza finalità è evolutiva. La baseline deve essere abbastanza modulare da rendere possibili estensioni future, come l'introduzione di perturbazioni più ricche, di arrivi dinamici, di logiche di rerouting, di regole adattive e, in prospettiva, di una chiusura del ciclo informativo tipica di un digital twin.
+
+Da queste finalità derivano alcune scelte implementative nette. In primo luogo, la simulazione è stata costruita in modo parametrico, così da isolare in un unico punto gli elementi che definiscono lo scenario. In secondo luogo, la gestione delle code e la selezione delle priorità sono state esplicitate nel modello, evitando di affidare il comportamento del sistema a meccanismi impliciti o difficili da controllare. In terzo luogo, la produzione degli output è stata separata dalla loro interpretazione grafica e statistica, così da mantenere distinto il livello di generazione dei dati dal livello della loro lettura.
+
+## Scelte tecnologiche e organizzazione del codice
+
+L'implementazione è realizzata in Julia. La scelta è coerente con la necessità di disporre di un linguaggio adatto sia alla modellazione algoritmica sia alla sperimentazione quantitativa, con una buona integrazione tra simulazione, gestione dati e analisi statistica. Le dipendenze principali del progetto confermano questa impostazione: `ConcurrentSim` viene utilizzato per la simulazione a eventi discreti, `ResumableFunctions` per la definizione dei processi sospendibili, `DataFrames` e `CSV` per la gestione degli output tabellari, `JSON3` per il caricamento dei dati strutturati, `StableRNGs` per la riproducibilità delle repliche e `Plots`/`StatsPlots` per la visualizzazione dei risultati.
+
+Il codice è organizzato in moduli con responsabilità distinte.
+
+- `config.jl` definisce la configurazione della campagna simulativa.
+- `input.jl` carica e struttura i dati di input.
+- `structures.jl` raccoglie le strutture dati principali del modello.
+- `selection.jl` implementa le regole di dispatching.
+- `coresim.jl` contiene la logica esecutiva della simulazione.
+- `output.jl` costruisce gli indicatori e i dataset di postprocess.
+- `anova.jl` sintetizza il confronto statistico tra policy.
+- `evaluation.jl` estende la lettura dei risultati verso clustering, ranking e raccomandazioni.
+
+Questa modularizzazione è rilevante non solo dal punto di vista del codice, ma anche dal punto di vista metodologico. Essa permette infatti di separare chiaramente la definizione dello scenario, la logica del comportamento simulato, la scelta delle politiche decisionali e l'analisi a valle degli output.
+
+## Configurazione della baseline simulativa
+
+La configurazione corrente della baseline viene definita in modo esplicito nella struttura `SimConfig`. Il caso di studio utilizzato nel repository prevede:
+
+- 320 ordini di produzione per campagna simulativa;
+- 100 repliche per ciascuna politica;
+- un seme principale pari a 42 da cui vengono derivati i semi delle singole repliche;
+- una cartella di input contenente il registry dei codici e la matrice dei tempi di lavorazione;
+- rilascio degli ordini a batch, con batch size pari a 80 e spaziatura temporale tra batch pari a 40 unità di tempo;
+- assegnazione sintetica delle scadenze tramite un offset uniforme compreso tra 16 e 40 unità di tempo rispetto al release time.
+
+La presenza di parametri espliciti ha un valore importante. Essa evita di rendere rigido il simulatore e consente di adattare in seguito la stessa logica esecutiva a scenari diversi, senza dover riscrivere la struttura del modello.
+
+## Dati di input e rappresentazione del sistema produttivo
+
+Il modello viene alimentato da due sorgenti principali. La prima è il file `code_registry_3route_5client_norm.json`, che contiene per ciascun codice prodotto le informazioni sulla route e sulla frequenza di occorrenza. La seconda è il file `lavoration_matrix.csv`, che associa a ciascun codice i tempi di lavorazione sulle stazioni rilevanti.
+
+Nel caso implementato, il sistema produttivo è descritto da:
+
+- 10 codici prodotto;
+- 8 stazioni di lavoro, identificate come `S1`-`S8`;
+- route specifiche per codice, con percorsi non uniformi lungo il job shop;
+- capacità aggregate per stazione fissate nel modello come `4, 3, 2, 3, 3, 2, 4, 3`.
+
+Ogni ordine di produzione viene quindi generato campionando:
+
+- il codice prodotto, sulla base della distribuzione di occorrenza letta dal registry;
+- la dimensione del lotto, sulla base della distribuzione associata al codice;
+- il tempo di rilascio, determinato dal batch di appartenenza;
+- la due date, costruita in modo sintetico a partire dal tempo di rilascio;
+- i tempi di lavorazione attesi e i tempi di lavorazione effettivi.
+
+Una scelta particolarmente importante è la distinzione tra tempi attesi e tempi effettivi. I tempi attesi vengono utilizzati dalle politiche di dispatching come informazione disponibile al decisore; i tempi effettivi vengono invece usati nell'esecuzione della lavorazione. In questo modo il modello evita di attribuire alle regole di priorità una conoscenza perfetta del futuro e introduce già una prima differenza tra livello informativo e livello operativo, che è coerente con una prospettiva successiva di digital twin.
+
+## Strutture dati principali del modello
+
+L'implementazione utilizza alcune strutture dati centrali.
+
+La struttura `Station` rappresenta una stazione produttiva attraverso nome, capacità disponibile, numero di risorse occupate e coda esplicita degli ordini in attesa. Questa scelta è rilevante perché consente di modellare la capacità come grandezza aggregata di stazione, anziché come insieme di macchine elementari separate.
+
+La struttura `Client`, che nel codice conserva la nomenclatura originaria, corrisponde concettualmente a un ordine di produzione. Ogni ordine possiede identificativo, codice prodotto, dimensione del lotto, tempo di rilascio, scadenza, route, tempi attesi, tempi effettivi, indice della stazione corrente e log di avanzamento.
+
+La struttura `AdvancementLog` registra per ciascun ordine i principali tempi evento: arrivo nel sistema, ingresso in coda, uscita dalla coda, inizio lavorazione, fine lavorazione e uscita dal sistema. Questa tracciatura dettagliata è fondamentale perché rende possibile ricostruire sia indicatori globali sia indicatori più fini a livello di stazione, ordine e componente temporale del makespan.
+
+Infine, la struttura `Dash` raccoglie i log di coda, i log degli ordini e il tempo finale della simulazione, costituendo il contenitore di base su cui opera il postprocess.
+
+## Logica di simulazione a eventi discreti
+
+Il cuore del lavoro è la costruzione della dinamica simulativa. Il modello adotta un'impostazione client-driven, in cui ogni ordine di produzione è rappresentato come un processo che attraversa la propria route stazione dopo stazione.
+
+La sequenza logica è la seguente.
+
+1. L'ordine attende fino al proprio tempo di rilascio.
+2. All'arrivo nel sistema viene registrato il tempo di system arrival.
+3. L'ordine raggiunge la stazione corrente, entra nella coda della stazione e registra l'evento di ingresso in coda.
+4. Nel momento in cui la stazione dispone di capacità libera, viene chiamata la procedura di dispatching.
+5. La procedura di dispatching seleziona dalla coda l'ordine da avviare secondo la policy attiva.
+6. L'ordine selezionato esce dalla coda, registra l'istante di uscita, avvia la lavorazione e rimane in servizio per un timeout pari al tempo effettivo di processamento.
+7. Terminata la lavorazione, la capacità occupata viene liberata e la stazione tenta immediatamente un nuovo dispatch.
+8. L'ordine passa alla stazione successiva fino al completamento della route.
+9. All'uscita finale viene registrato il system exit.
+
+Questa scelta è metodologicamente molto importante. Invece di legare la priorità direttamente alla richiesta di una risorsa, il modello rende esplicita la coda di stazione e colloca la decisione nel momento corretto, cioè quando la stazione può realmente avviare una nuova lavorazione. In questo modo la regola di priorità diventa osservabile, sostituibile e confrontabile.
+
+## Politiche di dispatching implementate
+
+Una parte centrale del lavoro riguarda la costruzione di un catalogo strutturato di regole di dispatching. Ogni policy è implementata come funzione autonoma con interfaccia uniforme e può quindi essere sostituita senza modificare il resto del simulatore.
+
+Nel repository risultano implementate 12 politiche:
+
+- `SIRO` (`Service In Random Order`);
+- `FIFO` (`First In First Out`);
+- `LIFO` (`Last In First Out`);
+- `SPT` (`Shortest Processing Time`);
+- `LPT` (`Longest Processing Time`);
+- `EDD` (`Earliest Due Date`);
+- `MINSLACK`;
+- `CRITICALRATIO`;
+- `FOPNR` (`Fewest Operations Remaining`);
+- `MOPNR` (`Most Operations Remaining`);
+- `LWRK` (`Least Work Remaining`);
+- `MWRK` (`Most Work Remaining`).
+
+Le politiche coprono famiglie decisionali differenti: ordine di arrivo, casualità, tempi di processo, urgenza rispetto alle scadenze e lavoro/numero di operazioni residue. Questa ampiezza non è accessoria, ma rappresenta uno dei risultati implementativi più importanti del lavoro, perché trasforma il simulatore in una piattaforma comparativa per politiche di scheduling eterogenee.
+
+È importante sottolineare che in una fase successiva di valutazione avanzata il clustering temporale è stato applicato a un sottoinsieme di 8 regole (`SIRO`, `FIFO`, `LIFO`, `SPT`, `LPT`, `EDD`, `MINSLACK`, `CRITICALRATIO`), considerate come set principale per la lettura comparativa delle prestazioni.
+
+## Riproducibilità e gestione delle repliche
+
+Un altro elemento significativo dell'implementazione riguarda la riproducibilità. Le repliche vengono costruite a partire da un master seed, dal quale si genera un vettore di semi secondari. Ogni simulazione utilizza quindi un generatore casuale stabile, permettendo sia il confronto coerente tra policy sia la ripetibilità delle campagne sperimentali.
+
+L'orchestrazione del processo è articolata su più livelli:
+
+- preparazione della singola simulazione;
+- esecuzione della singola simulazione;
+- esecuzione di più repliche per una stessa policy;
+- salvataggio strutturato dei risultati;
+- analisi comparativa a valle dell'intera campagna.
+
+Questa organizzazione, pur essendo ancora relativamente semplice, è già compatibile con campagne sperimentali più ampie e con futuri automatismi di scenario.
+
+## Logging, indicatori e postprocess
+
+Il simulatore non si limita a produrre tempi finali di completamento, ma costruisce una traccia dettagliata del comportamento del sistema. Tale scelta rende possibile una lettura molto più ricca del fenomeno simulato.
+
+Dal postprocess vengono derivati almeno i seguenti output:
+
+- tempi di attesa per stazione;
+- distribuzioni della lunghezza di coda;
+- composizione del makespan per codice prodotto;
+- livelli di puntualità e tardività;
+- profili di WIP di coda su bucket temporali;
+- saturazione media delle stazioni;
+- indicatori sintetici per replica raccolti in `anovaRef.csv`.
+
+Tra gli indicatori più importanti figurano:
+
+- makespan totale della replica;
+- throughput;
+- mean queue WIP;
+- mean queue length;
+- mean saturation;
+- mean makespan per ordine;
+- mean lateness;
+- mean tardiness;
+- on-time share;
+- mean queue time;
+- mean processing ratio;
+- bottleneck time share.
+
+Anche sul piano metodologico emergono due scelte rilevanti. La prima è l'aggregazione temporale del WIP in bucket di ampiezza costante, utile per studiare l'evoluzione del carico nel tempo. La seconda è la ridefinizione della saturazione come utilizzo medio di stazione, ottenuto rapportando il tempo totale di processamento al prodotto tra orizzonte simulato e capacità disponibile. Questa formulazione è coerente con il passaggio da una modellazione per macchine atomiche a una modellazione per capacità aggregata di stazione.
+
+## Output prodotti e organizzazione dei risultati
+
+Per ciascuna policy, il simulatore salva una cartella dedicata contenente i principali file di output. Nel repository sono presenti, tra gli altri:
+
+- `anovaRef.csv`;
+- `wip_system_buckets.csv`;
+- `wip_station_buckets.csv`;
+- `saturation.csv`;
+- `queuetime_box.csv`;
+- `queuelen_box.csv`;
+- `punctuality_box.csv`;
+- `punctuality_summary.csv`;
+- `makespan_composition.csv`;
+- `ontime_share.csv`;
+- `dashfig.png`.
+
+Questa organizzazione ha un vantaggio pratico evidente: la simulazione produce dati e dashboard riutilizzabili, mentre l'analisi comparativa può essere eseguita successivamente senza dover rilanciare l'intero modello.
+
+## Analisi comparativa delle policy
+
+Una volta consolidata la baseline, il progetto è stato esteso a una campagna comparativa su 12 politiche di dispatching. Considerando 100 repliche per ciascuna politica, il confronto ANOVA si basa complessivamente su 1200 esecuzioni.
+
+Il primo risultato importante è che le differenze tra policy non sono marginali. Le metriche principali mostrano p-value pari o prossimi a zero e dimensioni dell'effetto elevate. In particolare:
+
+- `mean_makespan` presenta `p = 0` ed `eta_squared = 0.7939`;
+- `ontime_share` presenta `p = 0` ed `eta_squared = 0.7537`;
+- `mean_queuetime` presenta `p = 0` ed `eta_squared = 0.8419`;
+- `mean_processing_ratio` presenta `p = 0` ed `eta_squared = 0.8743`.
+
+Questi valori indicano che la policy di dispatching influisce in modo sostanziale sul comportamento del sistema, confermando la correttezza della scelta progettuale di trattarla come variabile centrale dell'esperimento.
+
+La lettura dei risultati mostra inoltre che non esiste una singola regola dominante su tutte le metriche, ma emergono politiche con profili diversi.
+
+Sul `mean_makespan`, le migliori prestazioni medie appartengono a `SPT` e `LIFO`, con valori rispettivamente pari a circa 23.81 e 24.01, mentre `MOPNR` e soprattutto `MWRK` risultano nettamente peggiori.
+
+Sul `mean_queuetime`, `SPT` e `LIFO` sono ancora le alternative più efficaci, con tempi medi di attesa prossimi a 3.48 e 3.52, mentre `MOPNR` e `MWRK` mostrano attese sensibilmente più alte.
+
+Sull'`on-time share`, invece, emergono con forza `EDD` e `MINSLACK`, che raggiungono in media circa il 75.65% e il 70.77% di ordini puntuali. Questo risultato è coerente con la natura stessa di tali regole, progettate per privilegiare le scadenze e l'urgenza temporale.
+
+In termini di makespan totale di replica, `MINSLACK`, `SIRO` e `CRITICALRATIO` mostrano valori medi tra i più bassi, mentre `FOPNR` e `LWRK` risultano fra i meno competitivi. Questo suggerisce che il comportamento del sistema vada letto su più livelli: una policy può essere vantaggiosa per la puntualità, un'altra per il tempo medio di attraversamento, un'altra ancora per il carico complessivo del sistema.
+
+Nel complesso, la campagna sperimentale dimostra che il modello implementato non si limita a "girare", ma è abbastanza sensibile da distinguere in modo statisticamente rilevante gli effetti delle diverse scelte decisionali.
+
+## Lettura temporale delle stazioni e prime evidenze per un controllo adattivo
+
+Una seconda linea di analisi, sviluppata nel materiale di `resultsevaluation`, porta il lavoro oltre la semplice comparazione globale delle policy. In questa fase si osservano i profili temporali di `mean_queue_wip` delle stazioni e si costruiscono raggruppamenti basati sull'andamento nel tempo delle code.
+
+La lettura principale è stata effettuata con clustering a `k = 3`, che distingue tre famiglie di comportamento:
+
+- stazioni a picco anticipato (`early_peak`);
+- stazioni stabili o regolari (`stable_or_smooth`);
+- stazioni con picco secondario (`secondary_peak`).
+
+Nel repository, la lettura a `k = 3` associa:
+
+- `S1`, `S2`, `S3`, `S6` al cluster `early_peak`;
+- `S4`, `S5`, `S7` al cluster `stable_or_smooth`;
+- `S8` al cluster `secondary_peak`.
+
+Questa analisi è importante per due motivi. In primo luogo, mostra che il sistema non è omogeneo dal punto di vista dinamico: le stazioni non accumulano coda nello stesso modo né negli stessi intervalli temporali. In secondo luogo, apre la strada a politiche differenziate per famiglia di comportamento, invece di imporre una singola regola uniforme a tutto il job shop.
+
+Nelle raccomandazioni generate dal report avanzato, `SPT` emerge come regola standard per il cluster `early_peak`, mentre `EDD` viene raccomandata per i cluster `stable_or_smooth` e `secondary_peak`. Anche se queste indicazioni non sono ancora chiuse in un controllore online, esse costituiscono una prima base concreta per un'evoluzione verso logiche adattive data-informed.
+
+## Significato metodologico del lavoro svolto
+
+Il risultato metodologico principale di questa fase è il passaggio da una progettazione concettuale a una piattaforma eseguibile, modulare e sperimentabile. Il lavoro svolto produce infatti almeno cinque avanzamenti concreti.
+
+Il primo è la formalizzazione di un modello a eventi discreti in cui gli ordini di produzione sono tracciati lungo l'intera route.
+
+Il secondo è l'esplicitazione della decisione di dispatching come elemento autonomo e confrontabile.
+
+Il terzo è la disponibilità di una campagna di repliche riproducibile, basata su semi controllati.
+
+Il quarto è la costruzione di una pipeline di output che collega simulazione, analisi statistica e rappresentazione grafica.
+
+Il quinto è l'emersione di pattern dinamici di stazione che suggeriscono la possibilità di passare, in futuro, da politiche statiche a politiche adattive.
+
+In questo senso, il simulatore implementato non è solo una baseline tecnica, ma una piattaforma di ricerca già capace di supportare domande comparative, ipotesi di miglioramento e futuri meccanismi di controllo.
+
+## Limiti attuali e sviluppi futuri verso digital twin
+
+Pur essendo già operativa e metodologicamente consistente, la piattaforma non coincide ancora con un digital twin pienamente sviluppato. Il lavoro attuale rappresenta piuttosto il nucleo simulativo necessario per arrivarci.
+
+I principali limiti attuali sono i seguenti.
+
+- La logica di rilascio degli ordini è sintetica e non ancora legata a un flusso informativo reale in tempo quasi reale.
+- Le due date sono generate artificialmente e non derivate da una pianificazione esterna.
+- Il rerouting è stato discusso come direzione progettuale, ma non è ancora formalizzato come meccanismo operativo completo.
+- Le politiche implementate sono statiche: vengono selezionate a monte della campagna e non cambiano online durante la singola replica.
+- La perturbazione dei tempi di lavorazione è presente nella forma di tempi effettivi campionati, ma non è ancora integrata in uno scenario decisionale pienamente adattivo.
+
+Proprio per questo, il valore della baseline è duplice. Da un lato consente già un confronto robusto tra regole diverse in un ambiente controllato. Dall'altro rende ora possibile progettare in modo ordinato i passaggi successivi verso il digital twin.
+
+Le estensioni più naturali sono:
+
+- introduzione di ordini che arrivano dinamicamente durante la simulazione;
+- definizione di una logica di rerouting attivabile in presenza di congestione o indisponibilità;
+- costruzione di una policy adattiva che selezioni la regola di dispatching in base allo stato del sistema;
+- collegamento tra pattern storici osservati e logica decisionale online;
+- progressiva integrazione con fonti dati aggiornate dal sistema reale;
+- chiusura del ciclo tra osservazione, previsione e azione correttiva, che costituisce il tratto distintivo di un digital twin.
+
+In altre parole, il contributo di questa fase non consiste ancora nella realizzazione del gemello digitale completo, ma nella costruzione del suo motore sperimentale: un modello sufficientemente trasparente, parametrico e informativo da poter essere progressivamente connesso a livelli superiori di monitoraggio e controllo.
+
+## Figure consigliate da inserire
+
+Nel passaggio in LaTeX, il capitolo può essere rafforzato con una selezione contenuta ma significativa di immagini.
+
+Figura 1 - Architettura logica del workflow simulativo.
+Immagine da costruire ex novo come schema a blocchi: dati di input -> configurazione -> generazione ordini di produzione -> simulazione DES -> logging -> postprocess -> analisi comparativa -> prospettiva digital twin.
+
+Figura 2 - Sintesi comparativa delle policy sulle metriche principali.
+Usare `results1/00.visual_summary.png`.
+Questa figura è adatta a mostrare in un'unica vista che le policy producono distribuzioni differenti su makespan, puntualità, tempi di attesa, saturazione e throughput.
+
+Figura 3 - Profilo temporale dei cluster di stazione.
+Usare `resultsevaluation/machine_cluster_temporal_profiles_k3.png`.
+Questa figura è utile per sostenere il passaggio dal confronto statico delle policy all'idea di logiche differenziate per famiglia di comportamento delle stazioni.
+
+Figura 4 - Heatmap del makespan relativo per policy e codice prodotto.
+Usare `resultsevaluation/code_policy_relative_makespan_heatmap.png`.
+Questa figura evidenzia che la convenienza di una policy può dipendere anche dal mix di codici e non solo da una metrica media globale.
+
+Figura 5 - Dashboard completa di una policy rappresentativa.
+Se si vuole mostrare il dettaglio degli output generati dal simulatore, si puo inserire una `dashfig.png` relativa a una policy significativa, ad esempio `results1/04.SPT/dashfig.png` oppure `results1/06.EDD/dashfig.png`.
+
+## Chiusura del capitolo
+
+In sintesi, il lavoro svolto in questa fase realizza il passaggio cruciale dalla preparazione dei dati alla costruzione di un modello a eventi discreti effettivamente eseguibile, capace di rappresentare un job shop, confrontare diverse regole di dispatching e produrre un insieme coerente di indicatori per l'analisi. La struttura del codice, la riproducibilità delle repliche, la ricchezza del logging e la disponibilità di letture comparative e temporali rendono questa implementazione una base solida non solo per valutazioni accademiche, ma anche per futuri sviluppi verso un digital twin capace di supportare il controllo adattivo del sistema produttivo.
