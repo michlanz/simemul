@@ -18,9 +18,9 @@ export SimConfig,
 # ========     CONFIGURAZIONE PIPELINE     ===================================
 
 const analysisRunModes = [
-     :static,
+    # :static,
     # :adaptive_spt,
-    # :adaptive_slack,
+     :adaptive_slack,
     # :adaptive_combined_spt_first,
     # :adaptive_combined_slack_first,
 ]
@@ -28,11 +28,11 @@ const analysisRunModes = [
 const runModes = [
     # :static,
     # :adaptive_spt,
-    # :adaptive_slack,
+     :adaptive_slack,
     # :adaptive_combined_spt_first,
     # :adaptive_combined_slack_first,
-    # :figures,
-    # :anova,
+     :figures,
+     :anova,
      :evaluation,
 ]
 

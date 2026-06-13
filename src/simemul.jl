@@ -42,6 +42,21 @@ export simem,
        simConfig,
        importData
 
+# ===== TIMING FORMATTING =====
+function formatTime(seconds::Float64)::String
+    if seconds < 1
+        return @sprintf("%.0f ms", seconds * 1000)
+    elseif seconds < 60
+        return @sprintf("%.2f s", seconds)
+    elseif seconds < 3600
+        mins = seconds / 60
+        return @sprintf("%.2f min", mins)
+    else
+        hours = seconds / 3600
+        return @sprintf("%.2f h", hours)
+    end
+end
+
 # ========     QUI IL PATH IN SALVATAGGIO     ==============================================
 #nominato qui
 # ========     DA QUI CREDI IN DIO CHE TI AIUTA     ========================================
@@ -53,33 +68,42 @@ importData = loadImportData(simConfig)
 
 function simem(outpath::String; cfg::SimConfig = simConfig, data::ImportData = importData)
     seeds = buildSeeds(cfg)
-    benchmarks = NamedTuple[]
+    allBenchmarks = NamedTuple[]
+    
+    campaignStartTime = time()
     
     for (policyIdx, policy) in enumerate(selectionRules)
         outdir = joinpath(outpath, policy.label)
-
-        policyTime = @elapsed begin
-            timingData = runSaveSim(cfg, data, seeds, policy.label, policy.rule, outdir)
-        end
         
-        push!(benchmarks, (
-            campaignType = "static",
-            policy = policy.label,
+        timingData = runSaveSim(cfg, data, seeds, policy.label, policy.rule, outdir)
+        
+        push!(allBenchmarks, (
+            scenario = policy.label,
+            type = "policy",
             simCount = length(seeds),
-            timeSimulation = timingData.simTime,
-            timeSaving = timingData.saveTime,
-            timeTotal = timingData.totalTime,
-            index = policyIdx,
-            totalPolicies = length(selectionRules)
+            timeSimulation = formatTime(timingData.simTime),
+            timeSaving = formatTime(timingData.saveTime),
+            timeTotal = formatTime(timingData.totalTime)
         ))
     end
     
-    # Save benchmarks to evaluation folder
-    if !isempty(benchmarks)
-        evaluationPath = outpath * "_evaluation"
-        mkpath(evaluationPath)
-        timeFile = joinpath(evaluationPath, "time_simulation.csv")
-        df = DataFrame(benchmarks)
+    campaignTotalTime = time() - campaignStartTime
+    
+    # Add campaign total row
+    push!(allBenchmarks, (
+        scenario = "CAMPAGNA TOTALE",
+        type = "campaign_total",
+        simCount = length(seeds) * length(selectionRules),
+        timeSimulation = "-",
+        timeSaving = "-",
+        timeTotal = formatTime(campaignTotalTime)
+    ))
+    
+    # Consolidate all benchmarks in main campaign folder
+    if !isempty(allBenchmarks)
+        mkpath(outpath)
+        timeFile = joinpath(outpath, "time_simulation.csv")
+        df = DataFrame(allBenchmarks)
         CSV.write(timeFile, df)
     end
 end
@@ -137,6 +161,8 @@ function simemAdaptiveSPT(outpath::String = "results2"; cfg::SimConfig = simConf
     seeds = buildSeeds(cfg)
     benchmarks = NamedTuple[]
     
+    campaignStartTime = time()
+    
     queueThresholds = cfg.adaptiveQueueMin:cfg.adaptiveQueueMax
     for (qIdx, queueThreshold) in enumerate(queueThresholds)
         policyName = queueScenarioName(queueThreshold)
@@ -145,33 +171,43 @@ function simemAdaptiveSPT(outpath::String = "results2"; cfg::SimConfig = simConf
         timingData = runAdaptiveScenario(cfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold)
         
         push!(benchmarks, (
-            campaignType = "adaptive_spt",
             scenario = policyName,
+            type = "scenario",
             queueThreshold = queueThreshold,
             simCount = length(seeds),
-            timeSimulation = timingData.simTime,
-            timeSaving = timingData.saveTime,
-            timeTotal = timingData.totalTime,
-            index = qIdx,
-            totalScenarios = length(queueThresholds)
+            timeSimulation = formatTime(timingData.simTime),
+            timeSaving = formatTime(timingData.saveTime),
+            timeTotal = formatTime(timingData.totalTime)
         ))
     end
     
-    # Save benchmarks to evaluation folder
+    campaignTotalTime = time() - campaignStartTime
+    
+    # Add campaign total row
+    push!(benchmarks, (
+        scenario = "CAMPAGNA TOTALE",
+        type = "campaign_total",
+        queueThreshold = "-",
+        simCount = length(seeds) * length(collect(queueThresholds)),
+        timeSimulation = "-",
+        timeSaving = "-",
+        timeTotal = formatTime(campaignTotalTime)
+    ))
+    
+    # Consolidate all benchmarks in main campaign folder
     if !isempty(benchmarks)
-        evaluationPath = outpath * "_evaluation"
-        mkpath(evaluationPath)
-        timeFile = joinpath(evaluationPath, "time_simulation.csv")
+        mkpath(outpath)
+        timeFile = joinpath(outpath, "time_simulation.csv")
         df = DataFrame(benchmarks)
         CSV.write(timeFile, df)
     end
-    
-    return benchmarks
 end
 
 function simemAdaptiveSlack(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
     seeds = buildSeeds(cfg)
     benchmarks = NamedTuple[]
+    
+    campaignStartTime = time()
     
     slackThresholds = adaptiveSlackThresholds(cfg)
     for (sIdx, slackThreshold) in enumerate(slackThresholds)
@@ -181,34 +217,44 @@ function simemAdaptiveSlack(outpath::String = "results2"; cfg::SimConfig = simCo
         timingData = runAdaptiveScenario(cfg, data, seeds, policyName, outdir; slackThreshold = slackThreshold)
         
         push!(benchmarks, (
-            campaignType = "adaptive_slack",
             scenario = policyName,
+            type = "scenario",
             slackThreshold = slackThreshold,
             simCount = length(seeds),
-            timeSimulation = timingData.simTime,
-            timeSaving = timingData.saveTime,
-            timeTotal = timingData.totalTime,
-            index = sIdx,
-            totalScenarios = length(slackThresholds)
+            timeSimulation = formatTime(timingData.simTime),
+            timeSaving = formatTime(timingData.saveTime),
+            timeTotal = formatTime(timingData.totalTime)
         ))
     end
     
-    # Save benchmarks to evaluation folder
+    campaignTotalTime = time() - campaignStartTime
+    
+    # Add campaign total row
+    push!(benchmarks, (
+        scenario = "CAMPAGNA TOTALE",
+        type = "campaign_total",
+        slackThreshold = "-",
+        simCount = length(seeds) * length(slackThresholds),
+        timeSimulation = "-",
+        timeSaving = "-",
+        timeTotal = formatTime(campaignTotalTime)
+    ))
+    
+    # Consolidate all benchmarks in main campaign folder
     if !isempty(benchmarks)
-        evaluationPath = outpath * "_evaluation"
-        mkpath(evaluationPath)
-        timeFile = joinpath(evaluationPath, "time_simulation.csv")
+        mkpath(outpath)
+        timeFile = joinpath(outpath, "time_simulation.csv")
         df = DataFrame(benchmarks)
         CSV.write(timeFile, df)
     end
-    
-    return benchmarks
 end
 
 function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::ImportData, priorityOrder::Tuple{Symbol, Symbol})
     combinedCfg = scenarioConfig(cfg; adaptivePriorityOrder = priorityOrder)
     seeds = buildSeeds(combinedCfg)
     benchmarks = NamedTuple[]
+    
+    campaignStartTime = time()
     
     queueThresholds = collect(combinedCfg.adaptiveQueueMin:combinedCfg.adaptiveQueueMax)
     slackThresholds = adaptiveSlackThresholds(combinedCfg)
@@ -224,31 +270,41 @@ function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::Impo
             timingData = runAdaptiveScenario(combinedCfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold, slackThreshold = slackThreshold)
             
             push!(benchmarks, (
-                campaignType = "adaptive_combined",
-                priorityOrder = String(priorityOrder[1]) * "_" * String(priorityOrder[2]),
                 scenario = policyName,
+                type = "scenario",
+                priorityOrder = String(priorityOrder[1]) * "_" * String(priorityOrder[2]),
                 queueThreshold = queueThreshold,
                 slackThreshold = slackThreshold,
                 simCount = length(seeds),
-                timeSimulation = timingData.simTime,
-                timeSaving = timingData.saveTime,
-                timeTotal = timingData.totalTime,
-                index = scenarioCount,
-                totalScenarios = totalScenarios
+                timeSimulation = formatTime(timingData.simTime),
+                timeSaving = formatTime(timingData.saveTime),
+                timeTotal = formatTime(timingData.totalTime)
             ))
         end
     end
     
-    # Save benchmarks to evaluation folder
+    campaignTotalTime = time() - campaignStartTime
+    
+    # Add campaign total row
+    push!(benchmarks, (
+        scenario = "CAMPAGNA TOTALE",
+        type = "campaign_total",
+        priorityOrder = String(priorityOrder[1]) * "_" * String(priorityOrder[2]),
+        queueThreshold = "-",
+        slackThreshold = "-",
+        simCount = length(seeds) * totalScenarios,
+        timeSimulation = "-",
+        timeSaving = "-",
+        timeTotal = formatTime(campaignTotalTime)
+    ))
+    
+    # Consolidate all benchmarks in main campaign folder
     if !isempty(benchmarks)
-        evaluationPath = outpath * "_evaluation"
-        mkpath(evaluationPath)
-        timeFile = joinpath(evaluationPath, "time_simulation.csv")
+        mkpath(outpath)
+        timeFile = joinpath(outpath, "time_simulation.csv")
         df = DataFrame(benchmarks)
         CSV.write(timeFile, df)
     end
-    
-    return benchmarks
 end
 
 function simemAdaptiveCombinedSPTFirst(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
@@ -257,7 +313,6 @@ end
 
 function simemAdaptiveCombinedSlackFirst(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
     return runAdaptiveCombinedCampaign(outpath, cfg, data, (:MINSLACK, :SPT))
-end
 end
 
 
