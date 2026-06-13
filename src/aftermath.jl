@@ -6,7 +6,7 @@ ENV["GKSwstype"] = "100" # Save plots without opening GR windows.
 using StatsPlots
 using Plots
 
-using Main.simEmul.configdata: DashboardColors, makespanComponentColors, seriesColors
+using Main.configdata: DashboardColors, makespanComponentColors, seriesColors
 
 export plotresults,
        plot_wip_system_buckets,
@@ -16,6 +16,7 @@ export plotresults,
        plot_queuetime_box,
        plot_makespan_box,
        plot_makespan_composition,
+       plot_adaptive_selection_usage,
        plot_ontime_share,
        plotPunctualitySummary,
        closingprint,
@@ -115,6 +116,11 @@ function plotresults(outpath::String)#; monitor::Vector{SystemLog}; clients::Vec
         ),
         joinpath(outpath, "dashfig.png"),
     )
+
+    adaptiveUsagePath = joinpath(outpath, "adaptive_selection_usage.csv")
+    if isfile(adaptiveUsagePath)
+        savefig(plot_adaptive_selection_usage(outpath), joinpath(outpath, "adaptive_selection_usage.png"))
+    end
     println("##### grafici salvati ######################")
 end
 
@@ -287,6 +293,38 @@ function plot_makespan_composition(outpath::String)
         xrotation = 35,
         standard_plot_kwargs()...,
     )
+    return p
+end
+
+function plot_adaptive_selection_usage(outpath::String)
+    df = CSV.read(joinpath(outpath, "adaptive_selection_usage.csv"), DataFrame)
+    stations = ordered_labels(df.station)
+    policies = ordered_labels(df.effective_policy)
+    policy_colors = seriesColors(Plots.palette, length(policies))
+
+    values = zeros(length(stations), length(policies))
+    for (i, station) in enumerate(stations)
+        for (j, policy) in enumerate(policies)
+            subdf = df[(df.station .== station) .& (df.effective_policy .== policy), :]
+            values[i, j] = isempty(subdf) ? 0.0 : subdf.selection_percent[1]
+        end
+    end
+
+    p = groupedbar(
+        stations,
+        values;
+        xlabel = "Machine",
+        ylabel = "Selection Share (%)",
+        title = "Adaptive Selection Usage by Machine",
+        bar_position = :stack,
+        color = permutedims(policy_colors),
+        label = permutedims(policies),
+        legend = :outertopright,
+        ylims = (0.0, 100.0),
+        xrotation = 35,
+        standard_plot_kwargs()...,
+    )
+    hline!(p, [100.0], color = :black, linestyle = :dash, label = false)
     return p
 end
 

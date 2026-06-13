@@ -5,14 +5,6 @@ module simEmul
 #qui avvengono anche i cicli di confronto e pareto etc etc e definisco i path dove salvare i dati
 # ==================================================================================================================================
 
-println()
-println("############################################")
-println("########                            ########")
-println("########     Buongiorno Padrona     ########")
-println("########                            ########")
-println("############################################")
-println()
-
 using StableRNGs, Random
 using ResumableFunctions
 using CSV
@@ -23,9 +15,8 @@ using DataFrames
 using Statistics
 using Printf
 
-println("## abbiamo importato, perdoni la lentezza ##")
+println("##### Simulation Engine Loaded #############")
 
-include("./config.jl")
 include("./input.jl")
 include("./structures.jl")
 include("./selection.jl")
@@ -33,7 +24,7 @@ include("./output.jl")
 include("./coresim.jl")
 #include("./aftermath.jl")
 
-using .configdata
+using Main.configdata
 using .inputdata
 using .structures
 using .selectionrules
@@ -44,7 +35,8 @@ using .coresimulation
 export simem,
        simemAdaptiveSPT,
        simemAdaptiveSlack,
-       simemAdaptiveCombined,
+       simemAdaptiveCombinedSPTFirst,
+       simemAdaptiveCombinedSlackFirst,
        SimConfig,
        ImportData,
        simConfig,
@@ -61,16 +53,34 @@ importData = loadImportData(simConfig)
 
 function simem(outpath::String; cfg::SimConfig = simConfig, data::ImportData = importData)
     seeds = buildSeeds(cfg)
-    for policy in selectionRules
-        outdir = joinpath(outpath, policy.name)
+    benchmarks = NamedTuple[]
+    
+    for (policyIdx, policy) in enumerate(selectionRules)
+        outdir = joinpath(outpath, policy.label)
 
-        println()    
-        println("##### avvio emulatore ######################")
-        println("##### policy: $(policy.name) ######################")
-        println("##### repliche: $(length(seeds)) ########################")
-        println()
-
-        runSaveSim(cfg, data, seeds, policy.name, policy.rule, outdir)
+        policyTime = @elapsed begin
+            timingData = runSaveSim(cfg, data, seeds, policy.label, policy.rule, outdir)
+        end
+        
+        push!(benchmarks, (
+            campaignType = "static",
+            policy = policy.label,
+            simCount = length(seeds),
+            timeSimulation = timingData.simTime,
+            timeSaving = timingData.saveTime,
+            timeTotal = timingData.totalTime,
+            index = policyIdx,
+            totalPolicies = length(selectionRules)
+        ))
+    end
+    
+    # Save benchmarks to evaluation folder
+    if !isempty(benchmarks)
+        evaluationPath = outpath * "_evaluation"
+        mkpath(evaluationPath)
+        timeFile = joinpath(evaluationPath, "time_simulation.csv")
+        df = DataFrame(benchmarks)
+        CSV.write(timeFile, df)
     end
 end
 
@@ -119,54 +129,135 @@ function adaptiveSlackThresholds(cfg::SimConfig)::Vector{Float64}
 end
 
 function runAdaptiveScenario(cfg::SimConfig, data::ImportData, seeds::Vector{UInt32}, policyName::String, outdir::String; queueThreshold = nothing, slackThreshold = nothing)
-    println()
-    println("##### avvio adaptive scenario ######################")
-    println("##### scenario: $(policyName) ######################")
-    println("##### repliche: $(length(seeds)) ########################")
-    println()
-
-    runSaveSim(cfg, data, seeds, policyName, adaptiveRule(queueThreshold, slackThreshold, cfg), outdir)
+    timingData = runSaveSim(cfg, data, seeds, policyName, adaptiveRule(queueThreshold, slackThreshold, cfg), outdir)
+    return timingData
 end
 
 function simemAdaptiveSPT(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
     seeds = buildSeeds(cfg)
-    campaignRoot = joinpath(outpath, "1.adaptive_SPT")
-
-    for queueThreshold in cfg.adaptiveQueueMin:cfg.adaptiveQueueMax
+    benchmarks = NamedTuple[]
+    
+    queueThresholds = cfg.adaptiveQueueMin:cfg.adaptiveQueueMax
+    for (qIdx, queueThreshold) in enumerate(queueThresholds)
         policyName = queueScenarioName(queueThreshold)
-        outdir = joinpath(campaignRoot, policyName)
-        runAdaptiveScenario(cfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold)
+        outdir = joinpath(outpath, policyName)
+        
+        timingData = runAdaptiveScenario(cfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold)
+        
+        push!(benchmarks, (
+            campaignType = "adaptive_spt",
+            scenario = policyName,
+            queueThreshold = queueThreshold,
+            simCount = length(seeds),
+            timeSimulation = timingData.simTime,
+            timeSaving = timingData.saveTime,
+            timeTotal = timingData.totalTime,
+            index = qIdx,
+            totalScenarios = length(queueThresholds)
+        ))
     end
+    
+    # Save benchmarks to evaluation folder
+    if !isempty(benchmarks)
+        evaluationPath = outpath * "_evaluation"
+        mkpath(evaluationPath)
+        timeFile = joinpath(evaluationPath, "time_simulation.csv")
+        df = DataFrame(benchmarks)
+        CSV.write(timeFile, df)
+    end
+    
+    return benchmarks
 end
 
 function simemAdaptiveSlack(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
     seeds = buildSeeds(cfg)
-    campaignRoot = joinpath(outpath, "2.adaptive_SLACK")
-
-    for slackThreshold in adaptiveSlackThresholds(cfg)
+    benchmarks = NamedTuple[]
+    
+    slackThresholds = adaptiveSlackThresholds(cfg)
+    for (sIdx, slackThreshold) in enumerate(slackThresholds)
         policyName = slackScenarioName(slackThreshold)
-        outdir = joinpath(campaignRoot, policyName)
-        runAdaptiveScenario(cfg, data, seeds, policyName, outdir; slackThreshold = slackThreshold)
+        outdir = joinpath(outpath, policyName)
+        
+        timingData = runAdaptiveScenario(cfg, data, seeds, policyName, outdir; slackThreshold = slackThreshold)
+        
+        push!(benchmarks, (
+            campaignType = "adaptive_slack",
+            scenario = policyName,
+            slackThreshold = slackThreshold,
+            simCount = length(seeds),
+            timeSimulation = timingData.simTime,
+            timeSaving = timingData.saveTime,
+            timeTotal = timingData.totalTime,
+            index = sIdx,
+            totalScenarios = length(slackThresholds)
+        ))
     end
+    
+    # Save benchmarks to evaluation folder
+    if !isempty(benchmarks)
+        evaluationPath = outpath * "_evaluation"
+        mkpath(evaluationPath)
+        timeFile = joinpath(evaluationPath, "time_simulation.csv")
+        df = DataFrame(benchmarks)
+        CSV.write(timeFile, df)
+    end
+    
+    return benchmarks
 end
 
-function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::ImportData, campaignFolder::String, priorityOrder::Tuple{Symbol, Symbol})
+function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::ImportData, priorityOrder::Tuple{Symbol, Symbol})
     combinedCfg = scenarioConfig(cfg; adaptivePriorityOrder = priorityOrder)
     seeds = buildSeeds(combinedCfg)
-    campaignRoot = joinpath(outpath, campaignFolder)
-
-    for queueThreshold in combinedCfg.adaptiveQueueMin:combinedCfg.adaptiveQueueMax
-        for slackThreshold in adaptiveSlackThresholds(combinedCfg)
+    benchmarks = NamedTuple[]
+    
+    queueThresholds = collect(combinedCfg.adaptiveQueueMin:combinedCfg.adaptiveQueueMax)
+    slackThresholds = adaptiveSlackThresholds(combinedCfg)
+    totalScenarios = length(queueThresholds) * length(slackThresholds)
+    scenarioCount = 0
+    
+    for queueThreshold in queueThresholds
+        for slackThreshold in slackThresholds
+            scenarioCount += 1
             policyName = combinedScenarioName(queueThreshold, slackThreshold)
-            outdir = joinpath(campaignRoot, policyName)
-            runAdaptiveScenario(combinedCfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold, slackThreshold = slackThreshold)
+            outdir = joinpath(outpath, policyName)
+            
+            timingData = runAdaptiveScenario(combinedCfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold, slackThreshold = slackThreshold)
+            
+            push!(benchmarks, (
+                campaignType = "adaptive_combined",
+                priorityOrder = String(priorityOrder[1]) * "_" * String(priorityOrder[2]),
+                scenario = policyName,
+                queueThreshold = queueThreshold,
+                slackThreshold = slackThreshold,
+                simCount = length(seeds),
+                timeSimulation = timingData.simTime,
+                timeSaving = timingData.saveTime,
+                timeTotal = timingData.totalTime,
+                index = scenarioCount,
+                totalScenarios = totalScenarios
+            ))
         end
     end
+    
+    # Save benchmarks to evaluation folder
+    if !isempty(benchmarks)
+        evaluationPath = outpath * "_evaluation"
+        mkpath(evaluationPath)
+        timeFile = joinpath(evaluationPath, "time_simulation.csv")
+        df = DataFrame(benchmarks)
+        CSV.write(timeFile, df)
+    end
+    
+    return benchmarks
 end
 
-function simemAdaptiveCombined(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
-    runAdaptiveCombinedCampaign(outpath, cfg, data, "3.adaptive_SPT_precedence", (:SPT, :MINSLACK))
-    runAdaptiveCombinedCampaign(outpath, cfg, data, "4.adaptive_SLACK_precedence", (:MINSLACK, :SPT))
+function simemAdaptiveCombinedSPTFirst(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
+    return runAdaptiveCombinedCampaign(outpath, cfg, data, (:SPT, :MINSLACK))
+end
+
+function simemAdaptiveCombinedSlackFirst(outpath::String = "results2"; cfg::SimConfig = simConfig, data::ImportData = importData)
+    return runAdaptiveCombinedCampaign(outpath, cfg, data, (:MINSLACK, :SPT))
+end
 end
 
 

@@ -64,8 +64,9 @@ function postprocessDF(dashvector::Vector{Dash}, seeds::Vector{UInt32}, policyNa
         renamecols = false,
     )
     sort!(saturation, :machine)
+    adaptiveSelectionUsage = buildAdaptiveSelectionUsage(dashvector, stationsnames)
 
-    return (
+    results = (
         anovaRef = anovaRef,
         wip_system_buckets = aggregateBucketMeans(
             wipSystemBucketRuns,
@@ -85,6 +86,11 @@ function postprocessDF(dashvector::Vector{Dash}, seeds::Vector{UInt32}, policyNa
         queuetime_box = queuetime_box,
         queuelen_box = queuelen_box,
     )
+
+    if nrow(adaptiveSelectionUsage) > 0
+        return merge(results, (adaptive_selection_usage = adaptiveSelectionUsage,))
+    end
+    return results
 end
 
 function emptyQueuelenBox()
@@ -129,6 +135,15 @@ function emptySaturationLog()
     )
 end
 
+function emptyAdaptiveSelectionUsage()
+    return DataFrame(
+        station = String[],
+        effective_policy = String[],
+        selection_count = Int64[],
+        selection_percent = Float64[],
+    )
+end
+
 function emptyAnovaRef()
     return DataFrame(
         policy = String[],
@@ -153,8 +168,6 @@ function emptyAnovaRef()
         p10_queuetime = Float64[],
         p90_queuetime = Float64[],
         mean_queue_length = Float64[],
-        saturation_std = Float64[],
-        bottleneck_time_share = Float64[],
     )
 end
 
@@ -170,11 +183,6 @@ function buildAnovaRow(policyName::String, replicationId::Int64, seed::UInt32, s
     dfRatios.total_processing_time = coalesce.(dfRatios.total_processing_time, 0.0)
     validMakespan = dfRatios.makespan .> 0.0
     meanProcessingRatio = any(validMakespan) ? mean(dfRatios.total_processing_time[validMakespan] ./ dfRatios.makespan[validMakespan]) : 0.0
-
-    stationWaiting = isempty(dfClientStation) ? DataFrame(total_waiting_time = Float64[]) :
-        combine(groupby(dfClientStation, :station), :waiting_time => sum => :total_waiting_time)
-    totalWaitingTime = isempty(stationWaiting) ? 0.0 : sum(stationWaiting.total_waiting_time)
-    bottleneckTimeShare = totalWaitingTime > 0.0 ? 100.0 * maximum(stationWaiting.total_waiting_time) / totalWaitingTime : 0.0
 
     return (
         policy = policyName,
@@ -199,8 +207,6 @@ function buildAnovaRow(policyName::String, replicationId::Int64, seed::UInt32, s
         p10_queuetime = quantileOrZero(dfClientStation.waiting_time, 0.10),
         p90_queuetime = quantileOrZero(dfClientStation.waiting_time, 0.90),
         mean_queue_length = meanQueueLength,
-        saturation_std = nrow(dfSaturation) > 1 ? std(dfSaturation.processing_percent) : 0.0,
-        bottleneck_time_share = bottleneckTimeShare,
     )
 end
 
@@ -306,6 +312,33 @@ function buildSaturation(df_client_station::DataFrame, sim_time::Float64, statio
 
     sort!(df_saturation, :machine)
     return df_saturation
+end
+
+function buildAdaptiveSelectionUsage(dashvector::Vector{Dash}, stationsnames::Vector{String})
+    rows = NamedTuple[]
+    for dash in dashvector
+        for log in dash.adaptiveSelectionLog
+            push!(rows, (
+                station = log.station,
+                effective_policy = String(log.effective_policy),
+            ))
+        end
+    end
+
+    isempty(rows) && return emptyAdaptiveSelectionUsage()
+
+    df = DataFrame(rows)
+    usage = combine(groupby(df, [:station, :effective_policy]), nrow => :selection_count)
+    totals = combine(groupby(usage, :station), :selection_count => sum => :station_selection_count)
+    usage = leftjoin(usage, totals, on = :station)
+    usage.selection_percent = 100 .* usage.selection_count ./ usage.station_selection_count
+    select!(usage, :station, :effective_policy, :selection_count, :selection_percent)
+
+    stationOrder = Dict(station => idx for (idx, station) in enumerate(stationsnames))
+    usage.__station_order = [get(stationOrder, station, typemax(Int)) for station in usage.station]
+    sort!(usage, [:__station_order, :effective_policy])
+    select!(usage, Not(:__station_order))
+    return usage
 end
 
 function buildQueueBucketWip(df_queue_intervals::DataFrame, sim_time::Float64, bucket_size::Float64)

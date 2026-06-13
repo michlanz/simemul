@@ -3,11 +3,12 @@ module structures
 using ..Distributions
 using ..ConcurrentSim
 using ..StableRNGs
-using ..configdata: SimConfig
+using Main.configdata: SimConfig
 
 
 export Dash,
        QueueLenLog,
+       AdaptiveSelectionLog,
        WaitingTicket,
        Station,
        Client,
@@ -21,6 +22,12 @@ struct QueueLenLog
     timestamp::Float64
     station::String
     queueLength::Int64
+end
+
+struct AdaptiveSelectionLog
+    timestamp::Float64
+    station::String
+    effective_policy::Symbol
 end
 
 # =======================================================================tutto il resto
@@ -52,6 +59,7 @@ end
 
 mutable struct Dash
     queueLenLog::Vector{QueueLenLog}
+    adaptiveSelectionLog::Vector{AdaptiveSelectionLog}
     clientLogs::Vector{AdvancementLog}
     simEndTime::Float64
 end
@@ -158,6 +166,7 @@ end
 function init_dash(stations::Vector{Station})
     return Dash(
         [QueueLenLog(0.0, s.name, 0) for s in stations],
+        AdaptiveSelectionLog[],
         AdvancementLog[],
         0.0,
     )

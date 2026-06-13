@@ -6,7 +6,20 @@ using ..structures
 
 export selectNext,
        adaptiveRule,
+       SelectionPolicy,
+       SelectionDecision,
        selectionRules
+
+struct SelectionPolicy
+    id::Symbol
+    label::String
+    rule
+end
+
+struct SelectionDecision
+    queue_position::Int64
+    effective_policy::Union{Nothing, Symbol}
+end
 
 struct AdaptiveSelectionRule
     queueThreshold::Union{Nothing, Int64}
@@ -14,27 +27,11 @@ struct AdaptiveSelectionRule
     adaptivePriorityOrder::Tuple{Symbol, Symbol}
 end
       
-function selectNext(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG, priorityRule)::Int
+function selectNext(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG, priorityRule)::SelectionDecision
     @assert !isempty(station.waiting_queue) "selectNext chiamata con waiting_queue vuota"
-    selectedQueuePos = priorityRule(env, station, clients, rng)
-    return selectedQueuePos
-end
-
-function selectNext(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG, priorityRule::AdaptiveSelectionRule)::Int
-    @assert !isempty(station.waiting_queue) "selectNext chiamata con waiting_queue vuota"
-
-    queueTriggered = priorityRule.queueThreshold !== nothing && length(station.waiting_queue) >= priorityRule.queueThreshold
-    slackTriggered = priorityRule.slackThreshold !== nothing && queueMinSlack(env, station, clients) <= priorityRule.slackThreshold
-
-    if queueTriggered && slackTriggered
-        return selectWithAdaptivePriority(priorityRule.adaptivePriorityOrder[1], env, station, clients, rng)
-    elseif queueTriggered
-        return sptRule(env, station, clients, rng)
-    elseif slackTriggered
-        return minSlackRule(env, station, clients, rng)
-    end
-
-    return fifoRule(env, station, clients, rng)
+    decision = priorityRule(env, station, clients, rng)
+    decision isa SelectionDecision && return decision
+    return SelectionDecision(Int64(decision), nothing)
 end
 
 function fifoRule(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
@@ -122,10 +119,35 @@ function queueMinSlack(env::Environment, station::Station, clients::Vector{Clien
     return leastSlack
 end
 
-function selectWithAdaptivePriority(priority::Symbol, env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::Int
-    priority == :SPT && return sptRule(env, station, clients, rng)
-    priority == :MINSLACK && return minSlackRule(env, station, clients, rng)
+function selectWithAdaptivePriority(priority::Symbol, env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::SelectionDecision
+    priority == :SIRO && return SelectionDecision(siroRule(env, station, clients, rng), :SIRO)
+    priority == :FIFO && return SelectionDecision(fifoRule(env, station, clients, rng), :FIFO)
+    priority == :LIFO && return SelectionDecision(lifoRule(env, station, clients, rng), :LIFO)
+    priority == :SPT && return SelectionDecision(sptRule(env, station, clients, rng), :SPT)
+    priority == :LPT && return SelectionDecision(lptRule(env, station, clients, rng), :LPT)
+    priority == :EDD && return SelectionDecision(eddRule(env, station, clients, rng), :EDD)
+    priority == :MINSLACK && return SelectionDecision(minSlackRule(env, station, clients, rng), :MINSLACK)
+    priority == :CRITICALRATIO && return SelectionDecision(criticalRatioRule(env, station, clients, rng), :CRITICALRATIO)
+    priority == :FOPNR && return SelectionDecision(fopnrRule(env, station, clients, rng), :FOPNR)
+    priority == :MOPNR && return SelectionDecision(mopnrRule(env, station, clients, rng), :MOPNR)
+    priority == :LWRK && return SelectionDecision(lwrkRule(env, station, clients, rng), :LWRK)
+    priority == :MWRK && return SelectionDecision(mwrkRule(env, station, clients, rng), :MWRK)
     error("Priorita adaptive non valida: $(priority)")
+end
+
+function (priorityRule::AdaptiveSelectionRule)(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::SelectionDecision
+    queueTriggered = priorityRule.queueThreshold !== nothing && length(station.waiting_queue) >= priorityRule.queueThreshold
+    slackTriggered = priorityRule.slackThreshold !== nothing && queueMinSlack(env, station, clients) <= priorityRule.slackThreshold
+
+    if queueTriggered && slackTriggered
+        return selectWithAdaptivePriority(priorityRule.adaptivePriorityOrder[1], env, station, clients, rng)
+    elseif queueTriggered
+        return SelectionDecision(sptRule(env, station, clients, rng), :SPT)
+    elseif slackTriggered
+        return SelectionDecision(minSlackRule(env, station, clients, rng), :MINSLACK)
+    end
+
+    return SelectionDecision(fifoRule(env, station, clients, rng), :FIFO)
 end
 
 function adaptiveRule(queueThreshold, slackThreshold, cfg)::AdaptiveSelectionRule
@@ -222,18 +244,18 @@ end
 
 
 selectionRules = [
-    (name = "01.SIRO",  rule = siroRule),    
-    (name = "02.FIFO", rule = fifoRule),
-    (name = "03.LIFO", rule = lifoRule),
-    (name = "04.SPT",  rule = sptRule),
-    (name = "05.LPT",  rule = lptRule),
-    (name = "06.EDD",  rule = eddRule),
-    (name = "07.MINSLACK", rule = minSlackRule),
-    (name = "08.CRITICALRATIO", rule = criticalRatioRule),
-    (name = "09.FOPNR", rule = fopnrRule),
-    (name = "10.MOPNR", rule = mopnrRule),
-    (name = "11.LWRK", rule = lwrkRule),
-    (name = "12.MWRK", rule = mwrkRule)
+    SelectionPolicy(:SIRO, "01.SIRO", siroRule),
+    SelectionPolicy(:FIFO, "02.FIFO", fifoRule),
+    SelectionPolicy(:LIFO, "03.LIFO", lifoRule),
+    SelectionPolicy(:SPT, "04.SPT", sptRule),
+    SelectionPolicy(:LPT, "05.LPT", lptRule),
+    SelectionPolicy(:EDD, "06.EDD", eddRule),
+    SelectionPolicy(:MINSLACK, "07.MINSLACK", minSlackRule),
+    SelectionPolicy(:CRITICALRATIO, "08.CRITICALRATIO", criticalRatioRule),
+    SelectionPolicy(:FOPNR, "09.FOPNR", fopnrRule),
+    SelectionPolicy(:MOPNR, "10.MOPNR", mopnrRule),
+    SelectionPolicy(:LWRK, "11.LWRK", lwrkRule),
+    SelectionPolicy(:MWRK, "12.MWRK", mwrkRule)
 ]
 
 

@@ -1,44 +1,43 @@
-#qui lancio il main
+println()
+println("############################################")
+println("########                            ########")
+println("########     Buongiorno Padrona     ########")
+println("########                            ########")
+println("############################################")
+println()
 
+#println("##### loading config #######################")
+include("config.jl")
+
+#println("##### loading simulation engine ############")
 include("src/simemul.jl")
-include("src/aftermath.jl")
+
 include("src/anova.jl")
+println("##### Analysis Modules Loaded ###############")
 
+#println("##### loading figure module ################")
+include("src/aftermath.jl")
+
+#println("##### loading evaluation module ############")
+include("src/evaluation.jl")
+
+#println("##### loading orchestration ################")
+include("orchestration.jl")
+
+println()
+println("############################################")
+println("########                            ########")
+println("########     Abbiamo importato.     ########")
+println("########     Perdoni la lentezza    ########")
+println("########                            ########")
+println("############################################")
+println()
+
+using .configdata
 using .simEmul
-using .showdash
 using .showanova
+using .showdash
+using .showevaluation
+using .orchestration
 
-outpath = "results2"
-
-# Se decommenti :anova o :figures, scegli qui quale campagna analizzare.
-#analysisPath = joinpath(outpath, "1.adaptive_SPT")
-analysisPath = joinpath(outpath, "2.adaptive_SLACK")
-
-runModes = [
-    # :adaptive_spt,
-     :adaptive_slack,
-    # :adaptive_combined,
-    # :static,
-     :anova,
-    # :figures,
-]
-
-for runMode in runModes
-    println("##### RUN MODE: $(runMode) #####")
-
-    if runMode == :adaptive_spt
-        simemAdaptiveSPT(outpath)
-    elseif runMode == :adaptive_slack
-        simemAdaptiveSlack(outpath)
-    elseif runMode == :adaptive_combined
-        simemAdaptiveCombined(outpath)
-    elseif runMode == :static
-        simem(outpath)
-    elseif runMode == :anova
-        performAnova(analysisPath)
-    elseif runMode == :figures
-        savefigs(analysisPath)
-    else
-        error("Unknown runMode: $(runMode)")
-    end
-end
+runCampaign(runModes, analysisRunModes)

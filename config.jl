@@ -1,19 +1,49 @@
 module configdata
 
-using ..StableRNGs
-using ..Random
+using StableRNGs
+using Random
 
 export SimConfig,
        DashboardColors,
+       anovaEffectColors,
+       relativeHeatmapColors,
+       surfacePlotColors,
        buildSeeds,
+       analysisRunModes,
        makespanComponentColors,
+       runModes,
        seriesColors,
        validateConfig
+
+# ========     CONFIGURAZIONE PIPELINE     ===================================
+
+const analysisRunModes = [
+     :static,
+    # :adaptive_spt,
+    # :adaptive_slack,
+    # :adaptive_combined_spt_first,
+    # :adaptive_combined_slack_first,
+]
+
+const runModes = [
+    # :static,
+    # :adaptive_spt,
+    # :adaptive_slack,
+    # :adaptive_combined_spt_first,
+    # :adaptive_combined_slack_first,
+    # :figures,
+    # :anova,
+     :evaluation,
+]
+
+
+# ========     CONFIGURAZIONE MODELLO     ====================================
 
 Base.@kwdef struct SimConfig
     clientNum::Int64 = 320
     repetitions::Int64 = 100
     masterSeed::Int64 = 42
+    paretoTolerancePercent::Float64 = 2.0
     inputPath::String = "inputfile"
     registryFile::String = "code_registry_3route_5client_norm.json"
     matrixFile::String = "lavoration_matrix.csv"
@@ -23,9 +53,9 @@ Base.@kwdef struct SimConfig
     dueDateMaxOffset::Float64 = 40.0
     adaptivePriorityOrder::Tuple{Symbol, Symbol} = (:SPT, :MINSLACK)
     adaptiveQueueMin::Int64 = 3
-    adaptiveQueueMax::Int64 = 60
+    adaptiveQueueMax::Int64 = 50
     adaptiveSlackMin::Float64 = 0.0
-    adaptiveSlackMax::Float64 = 15.0
+    adaptiveSlackMax::Float64 = 14.0
     adaptiveSlackStep::Float64 = 0.2
 end
 
@@ -36,6 +66,25 @@ const DashboardColors = (
     caution = :gold,
     seriesPalette = :viridis,
     processing = :magenta,
+)
+
+const anovaEffectColors = (
+    queue = :deepskyblue,
+    slack = :hotpink2,
+    interaction = :green3,
+    residual = :lightgrey,
+)
+
+const relativeHeatmapColors = (
+    worse = :firebrick,
+    neutral = :white,
+    better = :forestgreen,
+    )
+    
+    const surfacePlotColors = (
+        worse = :firebrick,
+    neutral = :gold,
+    better = :forestgreen,
 )
 
 function validateConfig(cfg::SimConfig)::SimConfig
@@ -50,6 +99,7 @@ function validateConfig(cfg::SimConfig)::SimConfig
     cfg.adaptiveQueueMax >= cfg.adaptiveQueueMin || error("adaptiveQueueMax deve essere maggiore o uguale a adaptiveQueueMin")
     cfg.adaptiveSlackStep > 0.0 || error("adaptiveSlackStep deve essere positivo")
     cfg.adaptiveSlackMax >= cfg.adaptiveSlackMin || error("adaptiveSlackMax deve essere maggiore o uguale a adaptiveSlackMin")
+    cfg.paretoTolerancePercent >= 0.0 || error("paretoTolerancePercent non puo essere negativo")
     return cfg
 end
 

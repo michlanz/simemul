@@ -7,7 +7,7 @@ using ..ConcurrentSim
 using ..DataFrames
 using ..Distributions
 
-using ..configdata: SimConfig
+using Main.configdata: SimConfig
 using ..inputdata: ImportData
 using ..structures
 using ..selectionrules
@@ -15,30 +15,45 @@ using ..postprocess
 
 export runSaveSim, runManySim, saveResults
 
+# ===== SIMULATION FUNCTIONS =====
+
 function runSaveSim(cfg::SimConfig, importData::ImportData, seeds::Vector{UInt32}, policyName::String, priorityRule, outdir::String)
-    dashvector = runManySim(cfg, importData, seeds, priorityRule)
-    saveResults(dashvector, seeds, policyName, outdir, importData.stationNames, importData.stationCapacities)
+    totalTime = @elapsed begin
+        simTime = @elapsed dashvector = runManySim(cfg, importData, seeds, priorityRule)
+        saveTime = @elapsed saveResults(dashvector, seeds, policyName, outdir, importData.stationNames, importData.stationCapacities)
+    end
+    
+    return (simTime = simTime, saveTime = saveTime, totalTime = totalTime, simCount = length(seeds))
 end
 
 
 function saveResults(dashvector::Vector{Dash}, seeds::Vector{UInt32}, policyName::String, outdir::String, stationsnames::Vector{String}, stationscapacities::Vector{Int64})
-    println("##### inizio dei salvataggi ################")
+    println("  ##### inizio dei salvataggi ################")
     mkpath(outdir)
     results = postprocessDF(dashvector, seeds, policyName, stationsnames, stationscapacities)
     for (name, df) in pairs(results)
         CSV.write(joinpath(outdir, "$(name).csv"), df isa DataFrame ? df : DataFrame(value = df))
     end
-    println("##### fine dei salvataggi ##################")
+    println("  ##### fine dei salvataggi ##################")
 end
 
 
 function runManySim(cfg::SimConfig, importData::ImportData, seeds::Vector{UInt32}, priorityRule)
     dashvector = Dash[]
-    for seed in seeds
-        sim, rng, clients, dash = prepareOneSim(seed, cfg, importData)
-        oneSimulation!(sim, rng, clients, dash, priorityRule)
-        push!(dashvector, dash)
+    simTimes = Float64[]
+    
+    numSims = length(seeds)
+    totalSimTime = @elapsed begin
+        for (idx, seed) in enumerate(seeds)
+            oneSimTime = @elapsed begin
+                sim, rng, clients, dash = prepareOneSim(seed, cfg, importData)
+                oneSimulation!(sim, rng, clients, dash, priorityRule)
+                push!(dashvector, dash)
+            end
+            push!(simTimes, oneSimTime)
+        end
     end
+    
     return dashvector
 end
 
@@ -75,7 +90,7 @@ end
         push!(station.waiting_queue, WaitingTicket(client.id, readyEvent))
         logging(:enterqueue, env, dash, client, station.name, length(station.waiting_queue))
 
-        tryDispatch!(env, station, clients, rng, priorityRule)
+        tryDispatch!(env, station, clients, dash, rng, priorityRule)
 
         @yield readyEvent
 
@@ -86,7 +101,7 @@ end
         logging(:finishprocess, env, dash, client, station.name)
 
         station.busy -= 1
-        tryDispatch!(env, station, clients, rng, priorityRule)
+        tryDispatch!(env, station, clients, dash, rng, priorityRule)
 
         client.current_station += 1 #quando finisce, sfora le stazioni
     end
@@ -96,10 +111,16 @@ end
 
 
 
-function tryDispatch!(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG, priorityRule)
+function tryDispatch!(env::Environment, station::Station, clients::Vector{Client}, dash::Dash, rng::StableRNG, priorityRule)
     while station.busy < station.capacity && !isempty(station.waiting_queue)
-        selectedQueuePos = selectNext(env, station, clients, rng, priorityRule)
-        selectedTicket = splice!(station.waiting_queue, selectedQueuePos)
+        selectionDecision = selectNext(env, station, clients, rng, priorityRule)
+        selectedTicket = splice!(station.waiting_queue, selectionDecision.queue_position)
+        if selectionDecision.effective_policy !== nothing
+            push!(
+                dash.adaptiveSelectionLog,
+                AdaptiveSelectionLog(now(env), station.name, selectionDecision.effective_policy),
+            )
+        end
         station.busy += 1
         succeed(selectedTicket.ready_event)
     end

@@ -4,7 +4,7 @@ using ..JSON3
 using ..DataFrames
 using ..CSV
 using ..Distributions
-using ..configdata: SimConfig
+using Main.configdata: SimConfig
 
 export ImportData, loadImportData
 
