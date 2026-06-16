@@ -89,6 +89,46 @@ function safe_mean(values)::Float64
     return mean(values)
 end
 
+function round_seconds(seconds::Float64)::Float64
+    return round(seconds; digits = 3)
+end
+
+function parse_timing_seconds(value)::Float64
+    if value isa Number
+        return round_seconds(Float64(value))
+    end
+
+    text = strip(String(value))
+    isempty(text) && return 0.0
+    text == "-" && return 0.0
+
+    matched = match(r"^([0-9]+(?:\.[0-9]+)?)\s*(ms|s|min|h)?$", text)
+    matched === nothing && error("Cannot parse timing value: $(value)")
+
+    amount = parse(Float64, matched.captures[1])
+    unit = matched.captures[2]
+    seconds =
+        unit === nothing || unit == "s" ? amount :
+        unit == "ms" ? amount / 1000.0 :
+        unit == "min" ? amount * 60.0 :
+        unit == "h" ? amount * 3600.0 :
+        error("Unsupported timing unit: $(unit)")
+    return round_seconds(seconds)
+end
+
+function parse_int_value(value)::Int
+    value isa Number && return Int(value)
+    return parse(Int, strip(String(value)))
+end
+
+function normalize_timing_columns!(df::DataFrame)::DataFrame
+    for col in [:timeSimulation, :timeSaving, :timeTotal]
+        col in propertynames(df) || continue
+        df[!, col] = [parse_timing_seconds(value) for value in df[!, col]]
+    end
+    return df
+end
+
 function normalize_minmax(values::Vector{Float64}; higher_is_better::Bool = false)::Vector{Float64}
     isempty(values) && return Float64[]
     min_value = minimum(values)
@@ -103,6 +143,82 @@ end
 
 function sanitize_filename(name::AbstractString)::String
     return lowercase(replace(String(name), r"[^A-Za-z0-9]+" => "_"))
+end
+
+function load_campaign_timing(input_dir::String)::DataFrame
+    campaign_file = joinpath(input_dir, "time_simulation.csv")
+    if isfile(campaign_file)
+        return normalize_timing_columns!(CSV.read(campaign_file, DataFrame))
+    end
+
+    rows = DataFrame[]
+    for folder in readdir(input_dir; join = true)
+        isdir(folder) || continue
+        timing_file = joinpath(folder, "time_simulation.csv")
+        isfile(timing_file) || continue
+        df = CSV.read(timing_file, DataFrame)
+        if !(:scenario in propertynames(df))
+            insertcols!(df, 1, :scenario => fill(basename(folder), nrow(df)))
+        end
+        if !(:type in propertynames(df))
+            insertcols!(df, 2, :type => fill("scenario", nrow(df)))
+        end
+        push!(rows, normalize_timing_columns!(df))
+    end
+
+    isempty(rows) && return DataFrame()
+    return vcat(rows...; cols = :union)
+end
+
+function build_timing_overview(input_dir::String)::DataFrame
+    df = load_campaign_timing(input_dir)
+    if isempty(df)
+        return DataFrame(
+            scope = String[],
+            scenario_count = Int64[],
+            simulation_count = Int64[],
+            total_simulation_seconds = Float64[],
+            total_saving_seconds = Float64[],
+            total_wall_seconds = Float64[],
+            mean_seconds_per_simulation = Float64[],
+            simulation_to_saving_ratio = Union{Missing, Float64}[],
+        )
+    end
+
+    has_type = :type in propertynames(df)
+    campaign_rows = has_type ? findall(String.(df.type) .== "campaign_total") : Int[]
+    detail_rows = has_type ? findall(String.(df.type) .!= "campaign_total") : collect(1:nrow(df))
+    isempty(detail_rows) && (detail_rows = collect(1:nrow(df)))
+
+    total_simulation = round_seconds(sum(Float64.(df[detail_rows, :timeSimulation])))
+    total_saving = round_seconds(sum(Float64.(df[detail_rows, :timeSaving])))
+    total_wall = if !isempty(campaign_rows)
+        round_seconds(Float64(df[campaign_rows[1], :timeTotal]))
+    else
+        round_seconds(sum(Float64.(df[detail_rows, :timeTotal])))
+    end
+    simulation_count = if !isempty(campaign_rows) && :simCount in propertynames(df)
+        parse_int_value(df[campaign_rows[1], :simCount])
+    elseif :simCount in propertynames(df)
+        sum(parse_int_value.(df[detail_rows, :simCount]))
+    else
+        length(detail_rows)
+    end
+
+    return DataFrame(
+        scope = [basename(input_dir)],
+        scenario_count = [length(detail_rows)],
+        simulation_count = [simulation_count],
+        total_simulation_seconds = [total_simulation],
+        total_saving_seconds = [total_saving],
+        total_wall_seconds = [total_wall],
+        mean_seconds_per_simulation = [simulation_count > 0 ? round_seconds(total_wall / simulation_count) : 0.0],
+        simulation_to_saving_ratio = [total_saving > 0.0 ? round_seconds(total_simulation / total_saving) : missing],
+    )
+end
+
+function save_timing_overview(input_dir::String, output_dir::String)
+    CSV.write(joinpath(output_dir, "timing_overview.csv"), build_timing_overview(input_dir))
 end
 
 function parse_combined_scenario(label)
@@ -337,7 +453,7 @@ function save_combined_dashboard(summary_df::DataFrame, output_dir::String)
     savefig(dashboard, joinpath(output_dir, "dash_combined_surface.png"))
 end
 
-function build_combined_report(output_path::String, input_dir::String, output_dir::String, summary_df::DataFrame, best_df::DataFrame, pareto_exact::DataFrame, pareto_tolerance::DataFrame; tolerance_percent::Float64)
+function build_combined_report(output_path::String, input_dir::String, output_dir::String, summary_df::DataFrame, best_df::DataFrame, pareto_exact::DataFrame, pareto_tolerance::DataFrame, pareto_cuts::DataFrame; tolerance_percent::Float64)
     io = IOBuffer()
     println(io, "# Combined Adaptive Surface Report")
     println(io)
@@ -362,10 +478,24 @@ function build_combined_report(output_path::String, input_dir::String, output_di
     tolerance_rows = pareto_tolerance[pareto_tolerance.within_pareto_tolerance .== true, :]
     println(io, markdown_table(tolerance_rows; max_rows = min(nrow(tolerance_rows), 20)))
     println(io)
+    println(io, "## Pareto By 2D Cut")
+    cut_summary = DataFrame(
+        cut = ["simtime_ontime", "simtime_processing", "ontime_processing", "any_cut", "all_cuts"],
+        pareto_count = [
+            count(pareto_cuts.pareto_simtime_ontime),
+            count(pareto_cuts.pareto_simtime_processing),
+            count(pareto_cuts.pareto_ontime_processing),
+            count(pareto_cuts.pareto_any_cut),
+            count(pareto_cuts.pareto_all_cuts),
+        ],
+    )
+    println(io, markdown_table(cut_summary; max_rows = nrow(cut_summary)))
+    println(io)
     println(io, "## Reading Notes")
     println(io, "- Surface plots show the average KPI over replications for every `(queue, slack)` pair.")
     println(io, "- Contour heatmaps are the readable control view for the same surfaces.")
-    println(io, "- `combined_pareto_grid.png` marks exact Pareto-efficient grid points in green.")
+    println(io, "- `combined_global_pareto_plot.png` shows global 3D Pareto points and highlights the Pareto points for each 2D cut.")
+    println(io, "- `combined_pareto_grid.png` marks exact global 3D Pareto grid points in green and post-Pareto within-tolerance alternatives in yellow.")
     println(io, "- Green always means better for that KPI; red means worse.")
     println(io, "- Lower-is-better KPIs: total makespan, mean makespan, tardiness, and queue time.")
     println(io, "- Higher-is-better KPIs: on-time share and processing ratio.")
@@ -385,19 +515,33 @@ function perform_combined_evaluation(; input_dir::String, output_dir::String)
         pareto_exact;
         tolerance_percent = tolerance_percent,
     )
+    pareto_cuts = combined_pareto_cuts_table(pareto_source)
+    pareto_tolerance_cuts = combined_within_tolerance_cuts_table(pareto_tolerance)
+    add_within_tolerance_cut_flags!(pareto_tolerance, pareto_tolerance_cuts)
 
     reset_output_dir(output_dir)
+    save_timing_overview(input_dir, output_dir)
     CSV.write(joinpath(output_dir, "combined_surface_summary.csv"), summary_df)
     CSV.write(joinpath(output_dir, "combined_best_by_kpi.csv"), best_df)
     CSV.write(joinpath(output_dir, "combined_pareto_exact.csv"), pareto_exact)
     CSV.write(joinpath(output_dir, "combined_pareto_within_tolerance.csv"), pareto_tolerance)
+    CSV.write(joinpath(output_dir, "combined_pareto_cuts.csv"), pareto_cuts)
+    CSV.write(joinpath(output_dir, "combined_pareto_within_tolerance_cuts.csv"), pareto_tolerance_cuts)
 
     for spec in COMBINED_KPI_SPECS
         String(spec.column) in unique(String.(summary_df.metric)) || continue
         save_combined_surface_plot(summary_df, spec, output_dir)
         save_combined_contour_plot(summary_df, spec, output_dir)
     end
-    save_combined_pareto_grid(summary_df, pareto_exact, output_dir)
+    save_combined_global_pareto_plot(
+        pareto_tolerance,
+        pareto_cuts,
+        output_dir;
+        tolerance_percent = tolerance_percent,
+        filename = "combined_global_pareto_plot.png",
+        plot_title = "Combined Exact Pareto And $(tolerance_percent)% Equivalent Alternatives",
+    )
+    save_combined_pareto_grid(summary_df, pareto_exact, pareto_tolerance, pareto_cuts, output_dir; tolerance_percent = tolerance_percent)
     save_combined_dashboard(summary_df, output_dir)
     build_combined_report(
         joinpath(output_dir, "report.md"),
@@ -406,7 +550,8 @@ function perform_combined_evaluation(; input_dir::String, output_dir::String)
         summary_df,
         best_df,
         pareto_exact,
-        pareto_tolerance;
+        pareto_tolerance,
+        pareto_cuts;
         tolerance_percent = tolerance_percent,
     )
     println("##### combined evaluation outputs saved in $(output_dir) #####")
@@ -736,6 +881,76 @@ function global_pareto_table(source_df::DataFrame)::DataFrame
     return df
 end
 
+function combined_pareto_cuts_table(source_df::DataFrame)::DataFrame
+    df = copy(source_df)
+    simtime_ontime = pareto_flags(df, [metric_spec(:simtime), metric_spec(:ontime_share)])
+    simtime_processing = pareto_flags(df, [metric_spec(:simtime), metric_spec(:mean_processing_ratio)])
+    ontime_processing = pareto_flags(df, [metric_spec(:ontime_share), metric_spec(:mean_processing_ratio)])
+
+    return DataFrame(
+        alternative = String.(df.alternative),
+        queue_threshold = Int.(df.queue_threshold),
+        slack_threshold = Float64.(df.slack_threshold),
+        simtime = Float64.(df.simtime),
+        ontime_share = Float64.(df.ontime_share),
+        mean_processing_ratio = Float64.(df.mean_processing_ratio),
+        pareto_simtime_ontime = simtime_ontime,
+        pareto_simtime_processing = simtime_processing,
+        pareto_ontime_processing = ontime_processing,
+        pareto_any_cut = simtime_ontime .| simtime_processing .| ontime_processing,
+        pareto_all_cuts = simtime_ontime .& simtime_processing .& ontime_processing,
+    )
+end
+
+function combined_within_tolerance_cuts_table(tolerance_df::DataFrame)::DataFrame
+    within_df = tolerance_df[tolerance_df.within_pareto_tolerance .== true, :]
+
+    if nrow(within_df) == 0
+        return DataFrame(
+            alternative = String[],
+            queue_threshold = Int64[],
+            slack_threshold = Float64[],
+            within_pareto_simtime_ontime = Bool[],
+            within_pareto_simtime_processing = Bool[],
+            within_pareto_ontime_processing = Bool[],
+            within_pareto_any_cut = Bool[],
+            within_pareto_all_cuts = Bool[],
+        )
+    end
+
+    simtime_ontime = pareto_flags(within_df, [metric_spec(:simtime), metric_spec(:ontime_share)])
+    simtime_processing = pareto_flags(within_df, [metric_spec(:simtime), metric_spec(:mean_processing_ratio)])
+    ontime_processing = pareto_flags(within_df, [metric_spec(:ontime_share), metric_spec(:mean_processing_ratio)])
+
+    return DataFrame(
+        alternative = String.(within_df.alternative),
+        queue_threshold = Int.(within_df.queue_threshold),
+        slack_threshold = Float64.(within_df.slack_threshold),
+        within_pareto_simtime_ontime = simtime_ontime,
+        within_pareto_simtime_processing = simtime_processing,
+        within_pareto_ontime_processing = ontime_processing,
+        within_pareto_any_cut = simtime_ontime .| simtime_processing .| ontime_processing,
+        within_pareto_all_cuts = simtime_ontime .& simtime_processing .& ontime_processing,
+    )
+end
+
+function add_within_tolerance_cut_flags!(tolerance_df::DataFrame, tolerance_cuts_df::DataFrame)::DataFrame
+    all_cuts_lookup = Dict(String(row.alternative) => Bool(row.within_pareto_all_cuts) for row in eachrow(tolerance_cuts_df))
+    any_cut_lookup = Dict(String(row.alternative) => Bool(row.within_pareto_any_cut) for row in eachrow(tolerance_cuts_df))
+
+    tolerance_df.within_pareto_any_cut = [
+        get(any_cut_lookup, String(row.alternative), false)
+        for row in eachrow(tolerance_df)
+    ]
+
+    tolerance_df.within_pareto_all_cuts = [
+        get(all_cuts_lookup, String(row.alternative), false)
+        for row in eachrow(tolerance_df)
+    ]
+
+    return tolerance_df
+end
+
 function pareto_gap_percent(candidate, reference, spec)::Float64
     candidate_value = Float64(candidate[spec.column])
     reference_value = Float64(reference[spec.column])
@@ -803,35 +1018,60 @@ end
 function visible_frontier_2d(df::DataFrame, xcol::Symbol, ycol::Symbol)::DataFrame
     nrow(df) <= 1 && return copy(df)
 
-    ordered = sort(df, [xcol, ycol]; rev = [false, true])
-    keep = Bool[]
-    best_y = -Inf
+    frontier = df[pareto_flags(df, [metric_spec(xcol), metric_spec(ycol)]), :]
+    sort!(frontier, [xcol, ycol])
+    return frontier
+end
 
-    for row in eachrow(ordered)
-        y_value = Float64(row[ycol])
-        should_keep = y_value > best_y
-        push!(keep, should_keep)
-        should_keep && (best_y = y_value)
+function best_metric_row_index(df::DataFrame, column::Symbol)::Int
+    spec = metric_spec(column)
+    values = Float64.(df[!, column])
+    return spec.higher_is_better ? argmax(values) : argmin(values)
+end
+
+function informative_label_rows(df::DataFrame, xcol::Symbol, ycol::Symbol)::DataFrame
+    nrow(df) == 0 && return df[[], :]
+
+    selected_idxs = Int[]
+    push!(selected_idxs, best_metric_row_index(df, xcol))
+    push!(selected_idxs, best_metric_row_index(df, ycol))
+
+    if :composite_score in propertynames(df)
+        compromise_pool = :within_pareto_tolerance in propertynames(df) ?
+            findall(Bool.(df.within_pareto_tolerance)) :
+            collect(1:nrow(df))
+        isempty(compromise_pool) && (compromise_pool = collect(1:nrow(df)))
+        pool_scores = Float64.(df[compromise_pool, :composite_score])
+        push!(selected_idxs, compromise_pool[argmax(pool_scores)])
     end
 
-    return ordered[keep, :]
+    unique_idxs = Int[]
+    seen = Set{String}()
+    for idx in selected_idxs
+        alternative = String(df[idx, :alternative])
+        alternative in seen && continue
+        push!(unique_idxs, idx)
+        push!(seen, alternative)
+    end
+
+    return df[unique_idxs, :]
 end
 
 function pareto_view_plot(df::DataFrame, xcol::Symbol, ycol::Symbol; xlabel::String, ylabel::String, title::String, tolerance_percent::Float64)
-    outside = df[df.within_pareto_tolerance .== false, :]
-    near = df[(df.within_pareto_tolerance .== true) .& (df.exact_pareto .== false), :]
-    exact = df[df.exact_pareto .== true, :]
-    frontier = visible_frontier_2d(exact, xcol, ycol)
-    frontier_names = Set(String.(frontier.alternative))
-    exact_on_cut = exact[[String(row.alternative) in frontier_names for row in eachrow(exact)], :]
-    exact_off_cut = exact[[!(String(row.alternative) in frontier_names) for row in eachrow(exact)], :]
+    cut_flags = pareto_flags(df, [metric_spec(xcol), metric_spec(ycol)])
+    is_global_pareto = Bool.(df.exact_pareto)
 
-    if nrow(near) > 12
-        sort!(near, :tolerance_rank)
-        near_labels = near[1:12, :]
-    else
-        near_labels = near
-    end
+    has_within_all_cuts = :within_pareto_all_cuts in propertynames(df)
+    is_within_all_cuts = has_within_all_cuts ?
+        Bool.(df.within_pareto_all_cuts) :
+        fill(false, nrow(df))
+
+    outside = df[(df.within_pareto_tolerance .== false) .& (.!cut_flags), :]
+    near = df[(df.within_pareto_tolerance .== true) .& (.!cut_flags), :]
+    cut_pareto = df[cut_flags, :]
+    global_pareto = df[is_global_pareto, :]
+    within_all_cuts = df[is_within_all_cuts, :]
+    label_rows = informative_label_rows(df, xcol, ycol)
 
     p = scatter(;
         xlabel = xlabel,
@@ -847,17 +1087,111 @@ function pareto_view_plot(df::DataFrame, xcol::Symbol, ycol::Symbol; xlabel::Str
         legendfontsize = 8,
     )
 
-    if nrow(frontier) > 1
-        plot!(
+    nrow(outside) > 0 && scatter!(
+        p,
+        Float64.(outside[!, xcol]),
+        Float64.(outside[!, ycol]);
+        label = "Outside tolerance",
+        markercolor = :gray75,
+        markerstrokecolor = :gray35,
+        markersize = 6,
+    )
+
+    nrow(near) > 0 && scatter!(
+        p,
+        Float64.(near[!, xcol]),
+        Float64.(near[!, ycol]);
+        label = "Within $(tolerance_percent)% of global Pareto",
+        markercolor = :gold,
+        markerstrokecolor = :darkorange,
+        markersize = 7,
+    )
+
+    nrow(cut_pareto) > 0 && scatter!(
+        p,
+        Float64.(cut_pareto[!, xcol]),
+        Float64.(cut_pareto[!, ycol]);
+        label = "Cut Pareto",
+        markercolor = :green3,
+        markerstrokecolor = :green3,
+        markersize = 7,
+    )
+
+    nrow(global_pareto) > 0 && scatter!(
+        p,
+        Float64.(global_pareto[!, xcol]),
+        Float64.(global_pareto[!, ycol]);
+        label = "Global Pareto",
+        markershape = :circle,
+        markercolor = :black,
+        markerstrokecolor = :black,
+        markersize = 3,
+    )
+
+    nrow(within_all_cuts) > 0 && scatter!(
+        p,
+        Float64.(within_all_cuts[!, xcol]),
+        Float64.(within_all_cuts[!, ycol]);
+        label = "Within tolerance all cuts",
+        markershape = :star5,
+        markercolor = :black,
+        markerstrokecolor = :black,
+        markerstrokewidth = 1.0,
+        markersize = 7,
+    )
+
+    for row in eachrow(label_rows)
+        annotate!(
             p,
-            Float64.(frontier[!, xcol]),
-            Float64.(frontier[!, ycol]);
-            label = "Cut Pareto frontier",
-            color = :green4,
-            linestyle = :dash,
-            linewidth = 2,
+            Float64(row[xcol]),
+            Float64(row[ycol]),
+            text(short_alternative_label(row.alternative), 8, :left, :black),
         )
     end
+
+    return p
+end
+
+function pareto_cut_column(xcol::Symbol, ycol::Symbol)::Symbol
+    pair = Set([xcol, ycol])
+    pair == Set([:simtime, :ontime_share]) && return :pareto_simtime_ontime
+    pair == Set([:simtime, :mean_processing_ratio]) && return :pareto_simtime_processing
+    pair == Set([:ontime_share, :mean_processing_ratio]) && return :pareto_ontime_processing
+    error("Unsupported Pareto cut: $(xcol), $(ycol)")
+end
+
+function combined_pareto_view_plot(df::DataFrame, cuts_df::DataFrame, xcol::Symbol, ycol::Symbol; xlabel::String, ylabel::String, title::String, tolerance_percent::Float64)
+    cut_col = pareto_cut_column(xcol, ycol)
+    cut_lookup = Dict(String(row.alternative) => Bool(row[cut_col]) for row in eachrow(cuts_df))
+    is_cut_pareto = [get(cut_lookup, String(row.alternative), false) for row in eachrow(df)]
+
+    is_global_pareto = Bool.(df.exact_pareto)
+
+    has_within_all_cuts = :within_pareto_all_cuts in propertynames(df)
+    is_within_all_cuts = has_within_all_cuts ?
+        Bool.(df.within_pareto_all_cuts) :
+        fill(false, nrow(df))
+
+    outside = df[(df.within_pareto_tolerance .== false) .& (.!is_cut_pareto), :]
+    near = df[(df.within_pareto_tolerance .== true) .& (.!is_cut_pareto), :]
+    cut_pareto = df[is_cut_pareto, :]
+    global_pareto = df[is_global_pareto, :]
+    within_all_cuts = df[is_within_all_cuts, :]
+    label_rows = informative_label_rows(df, xcol, ycol)
+
+    p = scatter(;
+        xlabel = xlabel,
+        ylabel = ylabel,
+        title = title,
+        legend = :outertopright,
+        grid = true,
+        gridalpha = 0.18,
+        framestyle = :box,
+        titlefontsize = 14,
+        guidefontsize = 10,
+        tickfontsize = 8,
+        legendfontsize = 8,
+    )
 
     nrow(outside) > 0 && scatter!(
         p,
@@ -868,35 +1202,51 @@ function pareto_view_plot(df::DataFrame, xcol::Symbol, ycol::Symbol; xlabel::Str
         markerstrokecolor = :gray35,
         markersize = 6,
     )
+
     nrow(near) > 0 && scatter!(
         p,
         Float64.(near[!, xcol]),
         Float64.(near[!, ycol]);
-        label = "Within $(tolerance_percent)% of exact Pareto",
+        label = "Within $(tolerance_percent)% of global Pareto",
         markercolor = :gold,
         markerstrokecolor = :darkorange,
         markersize = 7,
     )
-    nrow(exact_off_cut) > 0 && scatter!(
+
+    nrow(cut_pareto) > 0 && scatter!(
         p,
-        Float64.(exact_off_cut[!, xcol]),
-        Float64.(exact_off_cut[!, ycol]);
-        label = "Exact Pareto, not on this cut",
+        Float64.(cut_pareto[!, xcol]),
+        Float64.(cut_pareto[!, ycol]);
+        label = "Cut Pareto",
         markercolor = :green3,
         markerstrokecolor = :green3,
         markersize = 7,
     )
-    nrow(exact_on_cut) > 0 && scatter!(
+
+    nrow(global_pareto) > 0 && scatter!(
         p,
-        Float64.(exact_on_cut[!, xcol]),
-        Float64.(exact_on_cut[!, ycol]);
-        label = "Cut Pareto",
-        markercolor = :green3,
+        Float64.(global_pareto[!, xcol]),
+        Float64.(global_pareto[!, ycol]);
+        label = "Global Pareto",
+        markershape = :circle,
+        markercolor = :black,
         markerstrokecolor = :black,
-        markersize = 8,
+        markersize = 3,
     )
 
-    for row in eachrow(near_labels)
+    nrow(within_all_cuts) > 0 && scatter!(
+        p,
+        Float64.(within_all_cuts[!, xcol]),
+        Float64.(within_all_cuts[!, ycol]);
+        label = "Within tolerance all cuts",
+        markershape = :star5,
+        markercolor = :black,
+        markerstrokecolor = :black,
+        markerstrokewidth = 1.0,
+        markersize = 7,
+    )
+
+    for row in eachrow(label_rows)
         annotate!(
             p,
             Float64(row[xcol]),
@@ -905,18 +1255,10 @@ function pareto_view_plot(df::DataFrame, xcol::Symbol, ycol::Symbol; xlabel::Str
         )
     end
 
-    for row in eachrow(exact_on_cut)
-        annotate!(
-            p,
-            Float64(row[xcol]),
-            Float64(row[ycol]),
-            text(short_alternative_label(row.alternative), 9, :left, :black),
-        )
-    end
     return p
 end
 
-function save_global_pareto_plot(tolerance_df::DataFrame, output_dir::String; tolerance_percent::Float64)
+function save_global_pareto_plot(tolerance_df::DataFrame, output_dir::String; tolerance_percent::Float64, filename::String = "global_pareto_plot.png", plot_title::String = "Exact Pareto And $(tolerance_percent)% Equivalent Alternatives")
     plots = [
         pareto_view_plot(
             tolerance_df,
@@ -952,39 +1294,94 @@ function save_global_pareto_plot(tolerance_df::DataFrame, output_dir::String; to
             plots...;
             layout = (1, 3),
             size = (2400, 760),
-            plot_title = "Exact Pareto And $(tolerance_percent)% Equivalent Alternatives",
+            plot_title = plot_title,
             plot_titlefontsize = 20,
             bottom_margin = 8Plots.mm,
             left_margin = 8Plots.mm,
         ),
-        joinpath(output_dir, "global_pareto_plot.png"),
+        joinpath(output_dir, filename),
     )
 end
 
-function save_combined_pareto_grid(summary_df::DataFrame, pareto_df::DataFrame, output_dir::String)
+function save_combined_global_pareto_plot(tolerance_df::DataFrame, cuts_df::DataFrame, output_dir::String; tolerance_percent::Float64, filename::String = "combined_global_pareto_plot.png", plot_title::String = "Combined Exact Pareto And $(tolerance_percent)% Equivalent Alternatives")
+    plots = [
+        combined_pareto_view_plot(
+            tolerance_df,
+            cuts_df,
+            :simtime,
+            :ontime_share;
+            xlabel = "Total Makespan (lower is better)",
+            ylabel = "On-Time Share (%)",
+            title = "Makespan vs On-Time",
+            tolerance_percent = tolerance_percent,
+        ),
+        combined_pareto_view_plot(
+            tolerance_df,
+            cuts_df,
+            :simtime,
+            :mean_processing_ratio;
+            xlabel = "Total Makespan (lower is better)",
+            ylabel = "Mean Processing Ratio",
+            title = "Makespan vs Processing Ratio",
+            tolerance_percent = tolerance_percent,
+        ),
+        combined_pareto_view_plot(
+            tolerance_df,
+            cuts_df,
+            :ontime_share,
+            :mean_processing_ratio;
+            xlabel = "On-Time Share (%)",
+            ylabel = "Mean Processing Ratio",
+            title = "On-Time vs Processing Ratio",
+            tolerance_percent = tolerance_percent,
+        ),
+    ]
+
+    savefig(
+        plot(
+            plots...;
+            layout = (1, 3),
+            size = (2400, 760),
+            plot_title = plot_title,
+            plot_titlefontsize = 20,
+            bottom_margin = 8Plots.mm,
+            left_margin = 8Plots.mm,
+        ),
+        joinpath(output_dir, filename),
+    )
+end
+
+function save_combined_pareto_grid(summary_df::DataFrame, pareto_df::DataFrame, tolerance_df::DataFrame, cuts_df::DataFrame, output_dir::String; tolerance_percent::Float64)
     queues = sort(unique(Int.(summary_df.queue_threshold)))
     slacks = sort(unique(Float64.(summary_df.slack_threshold)))
     matrix = zeros(Float64, length(queues), length(slacks))
     queue_idx = Dict(value => idx for (idx, value) in enumerate(queues))
     slack_idx = Dict(value => idx for (idx, value) in enumerate(slacks))
 
-    for row in eachrow(pareto_df[pareto_df.pareto_efficient .== true, :])
+    for row in eachrow(tolerance_df[tolerance_df.within_pareto_tolerance .== true, :])
         queue = Int(row.queue_threshold)
         slack = Float64(row.slack_threshold)
         haskey(queue_idx, queue) && haskey(slack_idx, slack) || continue
         matrix[queue_idx[queue], slack_idx[slack]] = 1.0
     end
 
+    for row in eachrow(cuts_df[cuts_df.pareto_any_cut .== true, :])
+        queue = Int(row.queue_threshold)
+        slack = Float64(row.slack_threshold)
+        haskey(queue_idx, queue) && haskey(slack_idx, slack) || continue
+        matrix[queue_idx[queue], slack_idx[slack]] = 2.0
+    end
+
     p = heatmap(
         slacks,
         queues,
         matrix;
-        color = cgrad([:white, :green3], [0.0, 1.0]),
-        clims = (0.0, 1.0),
+        color = cgrad([:white, :gold, :green3], [0.0, 0.5, 1.0]),
+        clims = (0.0, 2.0),
         colorbar = false,
         xlabel = "Slack Threshold",
         ylabel = "Queue Threshold",
-        title = "Exact Pareto-Efficient Scenarios",
+        title = "Combined Pareto Decision Grid",
         size = (1800, 1100),
         titlefontsize = 18,
         guidefontsize = 13,
@@ -992,6 +1389,38 @@ function save_combined_pareto_grid(summary_df::DataFrame, pareto_df::DataFrame, 
         framestyle = :box,
         margins = 8Plots.mm,
     )
+
+    global_rows = pareto_df[pareto_df.pareto_efficient .== true, :]
+    if nrow(global_rows) > 0
+        scatter!(
+            p,
+            Float64.(global_rows.slack_threshold),
+            Int.(global_rows.queue_threshold);
+            label = "Global Pareto",
+            markershape = :circle,
+            markercolor = :black,
+            markerstrokecolor = :black,
+            markersize = 4,
+        )
+    end
+
+    if :within_pareto_all_cuts in propertynames(tolerance_df)
+        star_rows = tolerance_df[tolerance_df.within_pareto_all_cuts .== true, :]
+        if nrow(star_rows) > 0
+            scatter!(
+                p,
+                Float64.(star_rows.slack_threshold),
+                Int.(star_rows.queue_threshold);
+                label = "Within tolerance all cuts",
+                markershape = :star5,
+                markercolor = :green3,
+                markerstrokecolor = :black,
+                markerstrokewidth = 2,
+                markersize = 10,
+            )
+        end
+    end
+
     savefig(p, joinpath(output_dir, "combined_pareto_grid.png"))
 end
 
@@ -1172,7 +1601,6 @@ function build_report(output_path::String, input_dir::String, output_dir::String
 end
 
 function reset_output_dir(output_dir::String)
-    rm(output_dir; recursive = true, force = true)
     mkpath(output_dir)
 end
 
@@ -1208,6 +1636,7 @@ function performEvaluation(; input_dir::String = INPUT_RESULTS_DIR, output_dir::
     )
 
     reset_output_dir(output_dir)
+    save_timing_overview(input_dir, output_dir)
     save_outputs(output_dir, summary_df, ranking_df, pareto_df, policy_focused_df, global_pareto_exact, global_pareto_tolerance)
 
     for spec in KPI_SPECS

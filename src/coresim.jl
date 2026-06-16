@@ -17,6 +17,10 @@ export runSaveSim, runManySim, saveResults
 
 # ===== SIMULATION FUNCTIONS =====
 
+function timingSeconds(seconds::Float64)::Float64
+    return round(seconds; digits = 3)
+end
+
 function runSaveSim(cfg::SimConfig, importData::ImportData, seeds::Vector{UInt32}, policyName::String, priorityRule, outdir::String)
     simTime = @elapsed dashvector = runManySim(cfg, importData, seeds, priorityRule)
     saveTime = @elapsed saveResults(dashvector, seeds, policyName, outdir, importData.stationNames, importData.stationCapacities)
@@ -25,9 +29,9 @@ function runSaveSim(cfg::SimConfig, importData::ImportData, seeds::Vector{UInt32
     timingDF = DataFrame(
         policy = policyName,
         simCount = length(seeds),
-        timeSimulation = simTime,
-        timeSaving = saveTime,
-        timeTotal = simTime + saveTime
+        timeSimulation = timingSeconds(simTime),
+        timeSaving = timingSeconds(saveTime),
+        timeTotal = timingSeconds(simTime + saveTime)
     )
     CSV.write(joinpath(outdir, "time_simulation.csv"), timingDF)
     

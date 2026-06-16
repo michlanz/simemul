@@ -43,18 +43,8 @@ export simem,
        importData
 
 # ===== TIMING FORMATTING =====
-function formatTime(seconds::Float64)::String
-    if seconds < 1
-        return @sprintf("%.0f ms", seconds * 1000)
-    elseif seconds < 60
-        return @sprintf("%.2f s", seconds)
-    elseif seconds < 3600
-        mins = seconds / 60
-        return @sprintf("%.2f min", mins)
-    else
-        hours = seconds / 3600
-        return @sprintf("%.2f h", hours)
-    end
+function timingSeconds(seconds::Float64)::Float64
+    return round(seconds; digits = 3)
 end
 
 # ========     QUI IL PATH IN SALVATAGGIO     ==============================================
@@ -71,19 +61,23 @@ function simem(outpath::String; cfg::SimConfig = simConfig, data::ImportData = i
     allBenchmarks = NamedTuple[]
     
     campaignStartTime = time()
+    totalSimulationTime = 0.0
+    totalSavingTime = 0.0
     
     for (policyIdx, policy) in enumerate(selectionRules)
         outdir = joinpath(outpath, policy.label)
         
         timingData = runSaveSim(cfg, data, seeds, policy.label, policy.rule, outdir)
+        totalSimulationTime += timingData.simTime
+        totalSavingTime += timingData.saveTime
         
         push!(allBenchmarks, (
             scenario = policy.label,
             type = "policy",
             simCount = length(seeds),
-            timeSimulation = formatTime(timingData.simTime),
-            timeSaving = formatTime(timingData.saveTime),
-            timeTotal = formatTime(timingData.totalTime)
+            timeSimulation = timingSeconds(timingData.simTime),
+            timeSaving = timingSeconds(timingData.saveTime),
+            timeTotal = timingSeconds(timingData.totalTime)
         ))
     end
     
@@ -94,9 +88,9 @@ function simem(outpath::String; cfg::SimConfig = simConfig, data::ImportData = i
         scenario = "CAMPAGNA TOTALE",
         type = "campaign_total",
         simCount = length(seeds) * length(selectionRules),
-        timeSimulation = "-",
-        timeSaving = "-",
-        timeTotal = formatTime(campaignTotalTime)
+        timeSimulation = timingSeconds(totalSimulationTime),
+        timeSaving = timingSeconds(totalSavingTime),
+        timeTotal = timingSeconds(campaignTotalTime)
     ))
     
     # Consolidate all benchmarks in main campaign folder
@@ -162,6 +156,8 @@ function simemAdaptiveSPT(outpath::String = "results2"; cfg::SimConfig = simConf
     benchmarks = NamedTuple[]
     
     campaignStartTime = time()
+    totalSimulationTime = 0.0
+    totalSavingTime = 0.0
     
     queueThresholds = cfg.adaptiveQueueMin:cfg.adaptiveQueueMax
     for (qIdx, queueThreshold) in enumerate(queueThresholds)
@@ -169,15 +165,17 @@ function simemAdaptiveSPT(outpath::String = "results2"; cfg::SimConfig = simConf
         outdir = joinpath(outpath, policyName)
         
         timingData = runAdaptiveScenario(cfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold)
+        totalSimulationTime += timingData.simTime
+        totalSavingTime += timingData.saveTime
         
         push!(benchmarks, (
             scenario = policyName,
             type = "scenario",
             queueThreshold = queueThreshold,
             simCount = length(seeds),
-            timeSimulation = formatTime(timingData.simTime),
-            timeSaving = formatTime(timingData.saveTime),
-            timeTotal = formatTime(timingData.totalTime)
+            timeSimulation = timingSeconds(timingData.simTime),
+            timeSaving = timingSeconds(timingData.saveTime),
+            timeTotal = timingSeconds(timingData.totalTime)
         ))
     end
     
@@ -189,9 +187,9 @@ function simemAdaptiveSPT(outpath::String = "results2"; cfg::SimConfig = simConf
         type = "campaign_total",
         queueThreshold = "-",
         simCount = length(seeds) * length(collect(queueThresholds)),
-        timeSimulation = "-",
-        timeSaving = "-",
-        timeTotal = formatTime(campaignTotalTime)
+        timeSimulation = timingSeconds(totalSimulationTime),
+        timeSaving = timingSeconds(totalSavingTime),
+        timeTotal = timingSeconds(campaignTotalTime)
     ))
     
     # Consolidate all benchmarks in main campaign folder
@@ -208,6 +206,8 @@ function simemAdaptiveSlack(outpath::String = "results2"; cfg::SimConfig = simCo
     benchmarks = NamedTuple[]
     
     campaignStartTime = time()
+    totalSimulationTime = 0.0
+    totalSavingTime = 0.0
     
     slackThresholds = adaptiveSlackThresholds(cfg)
     for (sIdx, slackThreshold) in enumerate(slackThresholds)
@@ -215,15 +215,17 @@ function simemAdaptiveSlack(outpath::String = "results2"; cfg::SimConfig = simCo
         outdir = joinpath(outpath, policyName)
         
         timingData = runAdaptiveScenario(cfg, data, seeds, policyName, outdir; slackThreshold = slackThreshold)
+        totalSimulationTime += timingData.simTime
+        totalSavingTime += timingData.saveTime
         
         push!(benchmarks, (
             scenario = policyName,
             type = "scenario",
             slackThreshold = slackThreshold,
             simCount = length(seeds),
-            timeSimulation = formatTime(timingData.simTime),
-            timeSaving = formatTime(timingData.saveTime),
-            timeTotal = formatTime(timingData.totalTime)
+            timeSimulation = timingSeconds(timingData.simTime),
+            timeSaving = timingSeconds(timingData.saveTime),
+            timeTotal = timingSeconds(timingData.totalTime)
         ))
     end
     
@@ -235,9 +237,9 @@ function simemAdaptiveSlack(outpath::String = "results2"; cfg::SimConfig = simCo
         type = "campaign_total",
         slackThreshold = "-",
         simCount = length(seeds) * length(slackThresholds),
-        timeSimulation = "-",
-        timeSaving = "-",
-        timeTotal = formatTime(campaignTotalTime)
+        timeSimulation = timingSeconds(totalSimulationTime),
+        timeSaving = timingSeconds(totalSavingTime),
+        timeTotal = timingSeconds(campaignTotalTime)
     ))
     
     # Consolidate all benchmarks in main campaign folder
@@ -255,6 +257,8 @@ function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::Impo
     benchmarks = NamedTuple[]
     
     campaignStartTime = time()
+    totalSimulationTime = 0.0
+    totalSavingTime = 0.0
     
     queueThresholds = collect(combinedCfg.adaptiveQueueMin:combinedCfg.adaptiveQueueMax)
     slackThresholds = adaptiveSlackThresholds(combinedCfg)
@@ -268,6 +272,8 @@ function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::Impo
             outdir = joinpath(outpath, policyName)
             
             timingData = runAdaptiveScenario(combinedCfg, data, seeds, policyName, outdir; queueThreshold = queueThreshold, slackThreshold = slackThreshold)
+            totalSimulationTime += timingData.simTime
+            totalSavingTime += timingData.saveTime
             
             push!(benchmarks, (
                 scenario = policyName,
@@ -276,9 +282,9 @@ function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::Impo
                 queueThreshold = queueThreshold,
                 slackThreshold = slackThreshold,
                 simCount = length(seeds),
-                timeSimulation = formatTime(timingData.simTime),
-                timeSaving = formatTime(timingData.saveTime),
-                timeTotal = formatTime(timingData.totalTime)
+                timeSimulation = timingSeconds(timingData.simTime),
+                timeSaving = timingSeconds(timingData.saveTime),
+                timeTotal = timingSeconds(timingData.totalTime)
             ))
         end
     end
@@ -293,9 +299,9 @@ function runAdaptiveCombinedCampaign(outpath::String, cfg::SimConfig, data::Impo
         queueThreshold = "-",
         slackThreshold = "-",
         simCount = length(seeds) * totalScenarios,
-        timeSimulation = "-",
-        timeSaving = "-",
-        timeTotal = formatTime(campaignTotalTime)
+        timeSimulation = timingSeconds(totalSimulationTime),
+        timeSaving = timingSeconds(totalSavingTime),
+        timeTotal = timingSeconds(campaignTotalTime)
     ))
     
     # Consolidate all benchmarks in main campaign folder

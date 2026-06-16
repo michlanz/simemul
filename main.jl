@@ -13,13 +13,16 @@ include("config.jl")
 include("src/simemul.jl")
 
 include("src/anova.jl")
-println("##### Analysis Modules Loaded ###############")
+println("##### Analysis Modules Loaded ##############")
 
 #println("##### loading figure module ################")
 include("src/aftermath.jl")
 
 #println("##### loading evaluation module ############")
 include("src/evaluation.jl")
+
+#println("##### loading ex-post evaluation module ####")
+include("src/evaluation_ex_post.jl")
 
 #println("##### loading orchestration ################")
 include("orchestration.jl")
@@ -38,6 +41,7 @@ using .simEmul
 using .showanova
 using .showdash
 using .showevaluation
+using .showexpost
 using .orchestration
 
-runCampaign(runModes, analysisRunModes)
+runCampaign(runModes, analysisRunModes, exPostRunModes)

@@ -10,6 +10,7 @@ export SimConfig,
        surfacePlotColors,
        buildSeeds,
        analysisRunModes,
+       exPostRunModes,
        makespanComponentColors,
        runModes,
        seriesColors,
@@ -18,22 +19,31 @@ export SimConfig,
 # ========     CONFIGURAZIONE PIPELINE     ===================================
 
 const analysisRunModes = [
-    # :static,
-    # :adaptive_spt,
+     :static,
+     :adaptive_spt,
      :adaptive_slack,
-    # :adaptive_combined_spt_first,
-    # :adaptive_combined_slack_first,
+     :adaptive_combined_spt_first,
+     :adaptive_combined_slack_first,
+]
+
+const exPostRunModes = [
+     :static,
+     :adaptive_spt,
+     :adaptive_slack,
+     :adaptive_combined_spt_first,
+     :adaptive_combined_slack_first,
 ]
 
 const runModes = [
-    # :static,
-    # :adaptive_spt,
-     :adaptive_slack,
-    # :adaptive_combined_spt_first,
-    # :adaptive_combined_slack_first,
-     :figures,
-     :anova,
-     :evaluation,
+     #:static,
+     #:adaptive_spt,
+     #:adaptive_slack,
+     #:adaptive_combined_spt_first,
+     #:adaptive_combined_slack_first,
+     #:figures,
+     #:anova,
+     #:evaluation,
+     :ex_post,
 ]
 
 
