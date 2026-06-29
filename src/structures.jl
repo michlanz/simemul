@@ -116,9 +116,15 @@ function sampleDueDate(rng::StableRNG, releaseTime::Float64, cfg::SimConfig)::Fl
     return releaseTime + rand(rng, Uniform(cfg.dueDateMinOffset, cfg.dueDateMaxOffset))
 end
 
-function sampleProcessingTimes(rng::StableRNG, expectedTimes::Vector{Float64})::Vector{Float64}
+function sampleProcessingTimes(
+    rng::StableRNG,
+    expectedTimes::Vector{Float64},
+    cfg::SimConfig,
+)::Vector{Float64}
+    cv = cfg.processingTimeCV
+
     return [
-        λ <= 0.0 ? 0.0 : rand(rng, truncated(Normal(λ, 0.1 * λ); lower = 0.0))
+        λ <= 0.0 ? 0.0 : rand(rng, truncated(Normal(λ, cv * λ); lower = 0.0))
         for λ in expectedTimes
     ]
 end
@@ -131,7 +137,7 @@ function generateClients(rng::StableRNG, cfg::SimConfig, codeNames::Vector{Strin
         lot = codeSizeValues[sc][ss] #size of the lot
         releaseTime = batchReleaseTime(i, cfg)
         expectedTime = codeProcessingTimes[sc] .* lot
-        sampledTime = sampleProcessingTimes(rng, expectedTime)
+        sampledTime = sampleProcessingTimes(rng, expectedTime, cfg)
         dueDate = sampleDueDate(rng, releaseTime, cfg)
         push!(clients, Client(i, codeNames[sc], lot, releaseTime, dueDate, codeRouteStations[sc], expectedTime, sampledTime))
     end

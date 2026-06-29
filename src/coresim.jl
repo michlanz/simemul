@@ -21,7 +21,30 @@ function timingSeconds(seconds::Float64)::Float64
     return round(seconds; digits = 3)
 end
 
+function batchDisplayName(policyName::String)::String
+    combinedMatch = match(r"^combined_(queue|slack)_first__queue_(\d+)__slack_([0-9]+(?:\.[0-9]+)?)$", policyName)
+    if combinedMatch !== nothing
+        priority = combinedMatch.captures[1]
+        queueThreshold = combinedMatch.captures[2]
+        slackThreshold = combinedMatch.captures[3]
+        return "adaptive $(priority) first queue $(queueThreshold) slack $(slackThreshold)"
+    end
+
+    queueMatch = match(r"^queue_(\d+)$", policyName)
+    queueMatch !== nothing && return "adaptive spt queue $(queueMatch.captures[1])"
+
+    slackMatch = match(r"^slack_([0-9]+(?:\.[0-9]+)?)$", policyName)
+    slackMatch !== nothing && return "adaptive slack $(slackMatch.captures[1])"
+
+    policyMatch = match(r"^\d+\.(.+)$", policyName)
+    policyMatch !== nothing && return lowercase(policyMatch.captures[1])
+
+    return lowercase(replace(replace(policyName, "__" => " "), "_" => " "))
+end
+
 function runSaveSim(cfg::SimConfig, importData::ImportData, seeds::Vector{UInt32}, policyName::String, priorityRule, outdir::String)
+    println("##### batch: $(batchDisplayName(policyName)) #####")
+
     simTime = @elapsed dashvector = runManySim(cfg, importData, seeds, priorityRule)
     saveTime = @elapsed saveResults(dashvector, seeds, policyName, outdir, importData.stationNames, importData.stationCapacities)
     

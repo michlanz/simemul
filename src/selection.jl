@@ -6,9 +6,15 @@ using ..structures
 
 export selectNext,
        adaptiveRule,
+       adaptivePolicyLabel,
+       buildAdaptiveSelectionPolicy,
+       buildCombinedAdaptiveSelectionPolicy,
+       buildBestSelectionRules,
+       combinedAdaptivePolicyLabel,
        SelectionPolicy,
        SelectionDecision,
-       selectionRules
+       selectionRules,
+       policyRuleById
 
 struct SelectionPolicy
     id::Symbol
@@ -21,11 +27,19 @@ struct SelectionDecision
     effective_policy::Union{Nothing, Symbol}
 end
 
-struct AdaptiveSelectionRule
-    queueThreshold::Union{Nothing, Int64}
-    slackThreshold::Union{Nothing, Float64}
-    adaptivePriorityOrder::Tuple{Symbol, Symbol}
+struct AdaptiveTrigger
+    policy::Symbol
+    threshold::Float64
 end
+
+struct AdaptiveSelectionRule
+    basePolicy::Symbol
+    triggers::Vector{AdaptiveTrigger}
+    priorityOrder::Vector{Symbol}
+end
+
+const BASELINE_POLICY_IDS = (:FIFO, :LIFO, :SIRO)
+const ADAPTIVE_POLICY_IDS = (:SPT, :EDD, :MINSLACK, :CRITICALRATIO)
       
 function selectNext(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG, priorityRule)::SelectionDecision
     @assert !isempty(station.waiting_queue) "selectNext chiamata con waiting_queue vuota"
@@ -135,25 +149,57 @@ function selectWithAdaptivePriority(priority::Symbol, env::Environment, station:
     error("Priorita adaptive non valida: $(priority)")
 end
 
-function (priorityRule::AdaptiveSelectionRule)(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::SelectionDecision
-    queueTriggered = priorityRule.queueThreshold !== nothing && length(station.waiting_queue) >= priorityRule.queueThreshold
-    slackTriggered = priorityRule.slackThreshold !== nothing && queueMinSlack(env, station, clients) <= priorityRule.slackThreshold
+function queueMinDueDateRemaining(env::Environment, station::Station, clients::Vector{Client})::Float64
+    leastRemaining = Inf
 
-    if queueTriggered && slackTriggered
-        return selectWithAdaptivePriority(priorityRule.adaptivePriorityOrder[1], env, station, clients, rng)
-    elseif queueTriggered
-        return SelectionDecision(sptRule(env, station, clients, rng), :SPT)
-    elseif slackTriggered
-        return SelectionDecision(minSlackRule(env, station, clients, rng), :MINSLACK)
+    for pos in eachindex(station.waiting_queue)
+        client = clients[station.waiting_queue[pos].client_id]
+        leastRemaining = min(leastRemaining, client.due_date - now(env))
     end
 
-    return SelectionDecision(fifoRule(env, station, clients, rng), :FIFO)
+    return leastRemaining
+end
+
+function queueMinCriticalRatio(env::Environment, station::Station, clients::Vector{Client})::Float64
+    lowestRatio = Inf
+
+    for pos in eachindex(station.waiting_queue)
+        client = clients[station.waiting_queue[pos].client_id]
+        remainingWork = sum(client.expected_processing_time[client.current_station:end])
+        ratio = remainingWork <= 0.0 ? Inf : (client.due_date - now(env)) / remainingWork
+        lowestRatio = min(lowestRatio, ratio)
+    end
+
+    return lowestRatio
+end
+
+function adaptiveTriggerFires(trigger::AdaptiveTrigger, env::Environment, station::Station, clients::Vector{Client})::Bool
+    trigger.policy == :SPT && return length(station.waiting_queue) >= Int(round(trigger.threshold))
+    trigger.policy == :EDD && return queueMinDueDateRemaining(env, station, clients) <= trigger.threshold
+    trigger.policy == :MINSLACK && return queueMinSlack(env, station, clients) <= trigger.threshold
+    trigger.policy == :CRITICALRATIO && return queueMinCriticalRatio(env, station, clients) <= trigger.threshold
+    error("Policy adaptive non supportata: $(trigger.policy)")
+end
+
+function (priorityRule::AdaptiveSelectionRule)(env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::SelectionDecision
+    triggered = Set{Symbol}()
+
+    for trigger in priorityRule.triggers
+        adaptiveTriggerFires(trigger, env, station, clients) && push!(triggered, trigger.policy)
+    end
+
+    for policy in priorityRule.priorityOrder
+        policy in triggered && return selectWithAdaptivePriority(policy, env, station, clients, rng)
+    end
+
+    return selectWithAdaptivePriority(priorityRule.basePolicy, env, station, clients, rng)
 end
 
 function adaptiveRule(queueThreshold, slackThreshold, cfg)::AdaptiveSelectionRule
-    cleanQueueThreshold = queueThreshold === nothing ? nothing : Int64(queueThreshold)
-    cleanSlackThreshold = slackThreshold === nothing ? nothing : Float64(slackThreshold)
-    return AdaptiveSelectionRule(cleanQueueThreshold, cleanSlackThreshold, cfg.adaptivePriorityOrder)
+    triggers = AdaptiveTrigger[]
+    queueThreshold !== nothing && push!(triggers, AdaptiveTrigger(:SPT, Float64(queueThreshold)))
+    slackThreshold !== nothing && push!(triggers, AdaptiveTrigger(:MINSLACK, Float64(slackThreshold)))
+    return AdaptiveSelectionRule(:FIFO, triggers, collect(cfg.adaptivePriorityOrder))
 end
 
 #(tempo residuo alla due date) / (lavoro residuo): piu e basso, piu il job e critico.
@@ -257,6 +303,183 @@ selectionRules = [
     SelectionPolicy(:LWRK, "11.LWRK", lwrkRule),
     SelectionPolicy(:MWRK, "12.MWRK", mwrkRule)
 ]
+
+function policyRuleById(policy::Symbol)
+    policy == :SIRO && return siroRule
+    policy == :FIFO && return fifoRule
+    policy == :LIFO && return lifoRule
+    policy == :SPT && return sptRule
+    policy == :LPT && return lptRule
+    policy == :EDD && return eddRule
+    policy == :MINSLACK && return minSlackRule
+    policy == :CRITICALRATIO && return criticalRatioRule
+    policy == :FOPNR && return fopnrRule
+    policy == :MOPNR && return mopnrRule
+    policy == :LWRK && return lwrkRule
+    policy == :MWRK && return mwrkRule
+    error("Policy non valida: $(policy)")
+end
+
+function thresholdValueLabel(value)::String
+    value isa Integer && return string(value)
+    clean = replace(string(round(Float64(value); digits = 10)), "-0.0" => "0.0")
+    occursin(".", clean) || return clean * ".0"
+    return clean
+end
+
+function adaptiveTriggerLabel(policy::Symbol, threshold)::String
+    policy == :SPT && return "spt_queue_" * lpad(string(Int(round(threshold))), 3, "0")
+    policy == :MINSLACK && return "minslack_slack_$(thresholdValueLabel(threshold))"
+    policy == :EDD && return "edd_due_$(thresholdValueLabel(threshold))"
+    policy == :CRITICALRATIO && return "criticalratio_ratio_$(thresholdValueLabel(threshold))"
+    error("Policy adaptive non supportata per label: $(policy)")
+end
+
+function parseAdaptiveTriggerLabel(label::AbstractString)::AdaptiveTrigger
+    label = String(label)
+    sptMatch = match(r"^spt_queue_(\d+)$", label)
+    sptMatch !== nothing && return AdaptiveTrigger(:SPT, parse(Float64, sptMatch.captures[1]))
+
+    queueMatch = match(r"^queue_(\d+)$", label)
+    queueMatch !== nothing && return AdaptiveTrigger(:SPT, parse(Float64, queueMatch.captures[1]))
+
+    minSlackMatch = match(r"^minslack_slack_([0-9]+(?:\.[0-9]+)?)$", label)
+    minSlackMatch !== nothing && return AdaptiveTrigger(:MINSLACK, parse(Float64, minSlackMatch.captures[1]))
+
+    slackMatch = match(r"^slack_([0-9]+(?:\.[0-9]+)?)$", label)
+    slackMatch !== nothing && return AdaptiveTrigger(:MINSLACK, parse(Float64, slackMatch.captures[1]))
+
+    eddDueMatch = match(r"^edd_due_([0-9]+(?:\.[0-9]+)?)$", label)
+    eddDueMatch !== nothing && return AdaptiveTrigger(:EDD, parse(Float64, eddDueMatch.captures[1]))
+
+    eddMatch = match(r"^edd_([0-9]+(?:\.[0-9]+)?)$", label)
+    eddMatch !== nothing && return AdaptiveTrigger(:EDD, parse(Float64, eddMatch.captures[1]))
+
+    criticalRatioMatch = match(r"^criticalratio_ratio_([0-9]+(?:\.[0-9]+)?)$", label)
+    criticalRatioMatch !== nothing && return AdaptiveTrigger(:CRITICALRATIO, parse(Float64, criticalRatioMatch.captures[1]))
+
+    crMatch = match(r"^criticalratio_([0-9]+(?:\.[0-9]+)?)$", label)
+    crMatch !== nothing && return AdaptiveTrigger(:CRITICALRATIO, parse(Float64, crMatch.captures[1]))
+
+    error("Label trigger adaptive non valida: $(label)")
+end
+
+function selectionPolicyId(label::AbstractString)::Symbol
+    label = String(label)
+    clean = replace(uppercase(label), r"[^A-Z0-9]+" => "_")
+    clean = strip(clean, '_')
+    isempty(clean) && error("Label policy vuota")
+    return Symbol(clean)
+end
+
+function adaptivePolicyLabel(basePolicy::Symbol, adaptivePolicy::Symbol, threshold)::String
+    triggerLabel = adaptiveTriggerLabel(adaptivePolicy, threshold)
+    basePolicy == :FIFO && return triggerLabel
+    return "adaptive_$(lowercase(String(basePolicy)))__$(triggerLabel)"
+end
+
+function combinedAdaptivePolicyLabel(basePolicy::Symbol, firstPolicy::Symbol, firstThreshold, secondPolicy::Symbol, secondThreshold)::String
+    firstLabel = adaptiveTriggerLabel(firstPolicy, firstThreshold)
+    secondLabel = adaptiveTriggerLabel(secondPolicy, secondThreshold)
+
+    if basePolicy == :FIFO && Set([firstPolicy, secondPolicy]) == Set([:SPT, :MINSLACK])
+        prefix = firstPolicy == :SPT ? "combined_queue_first" : "combined_slack_first"
+        queueLabel = firstPolicy == :SPT ? firstLabel : secondLabel
+        slackLabel = firstPolicy == :MINSLACK ? firstLabel : secondLabel
+        return "$(prefix)__$(queueLabel)__$(slackLabel)"
+    end
+
+    return "combined_$(lowercase(String(basePolicy)))__$(firstLabel)_first__$(secondLabel)"
+end
+
+function buildAdaptiveSelectionPolicy(label::String, basePolicy::Symbol, triggers::Vector{AdaptiveTrigger}, priorityOrder::Vector{Symbol})::SelectionPolicy
+    basePolicy in BASELINE_POLICY_IDS || error("La baseline adaptive deve essere una tra $(BASELINE_POLICY_IDS), trovata $(basePolicy)")
+    !isempty(triggers) || error("Serve almeno una policy adaptive per $(label)")
+
+    for trigger in triggers
+        trigger.policy in ADAPTIVE_POLICY_IDS || error("Policy adaptive non valida in $(label): $(trigger.policy)")
+    end
+
+    triggerPolicies = Set(trigger.policy for trigger in triggers)
+    Set(priorityOrder) == triggerPolicies || error("priorityOrder non coerente per $(label): $(priorityOrder) vs $(collect(triggerPolicies))")
+
+    return SelectionPolicy(
+        selectionPolicyId(label),
+        label,
+        AdaptiveSelectionRule(basePolicy, triggers, priorityOrder),
+    )
+end
+
+function buildAdaptiveSelectionPolicy(basePolicy::Symbol, adaptivePolicy::Symbol, threshold)::SelectionPolicy
+    label = adaptivePolicyLabel(basePolicy, adaptivePolicy, threshold)
+    return buildAdaptiveSelectionPolicy(label, basePolicy, [AdaptiveTrigger(adaptivePolicy, Float64(threshold))], [adaptivePolicy])
+end
+
+function buildCombinedAdaptiveSelectionPolicy(basePolicy::Symbol, firstPolicy::Symbol, firstThreshold, secondPolicy::Symbol, secondThreshold)::SelectionPolicy
+    label = combinedAdaptivePolicyLabel(basePolicy, firstPolicy, firstThreshold, secondPolicy, secondThreshold)
+    triggers = [
+        AdaptiveTrigger(firstPolicy, Float64(firstThreshold)),
+        AdaptiveTrigger(secondPolicy, Float64(secondThreshold)),
+    ]
+    return buildAdaptiveSelectionPolicy(label, basePolicy, triggers, [firstPolicy, secondPolicy])
+end
+
+function staticSelectionPolicyByLabel(label::AbstractString)::Union{Nothing, SelectionPolicy}
+    label = String(label)
+    for policy in selectionRules
+        policy.label == label && return policy
+        String(policy.id) == label && return policy
+    end
+
+    return nothing
+end
+
+function parseBestPolicyLabel(label::AbstractString, cfg)::SelectionPolicy
+    label = String(label)
+    staticPolicy = staticSelectionPolicyByLabel(label)
+    staticPolicy !== nothing && return staticPolicy
+
+    oldCombinedMatch = match(r"^combined_(queue|slack)_first__(queue_\d+)__(slack_[0-9]+(?:\.[0-9]+)?)$", label)
+    if oldCombinedMatch !== nothing
+        queueTrigger = parseAdaptiveTriggerLabel(oldCombinedMatch.captures[2])
+        slackTrigger = parseAdaptiveTriggerLabel(oldCombinedMatch.captures[3])
+        priorityOrder = oldCombinedMatch.captures[1] == "queue" ?
+            [queueTrigger.policy, slackTrigger.policy] :
+            [slackTrigger.policy, queueTrigger.policy]
+        return buildAdaptiveSelectionPolicy(label, :FIFO, [queueTrigger, slackTrigger], priorityOrder)
+    end
+
+    genericCombinedMatch = match(r"^combined_([a-z]+)__(.+)_first__(.+)$", label)
+    if genericCombinedMatch !== nothing
+        basePolicy = Symbol(uppercase(genericCombinedMatch.captures[1]))
+        triggerA = parseAdaptiveTriggerLabel(genericCombinedMatch.captures[2])
+        triggerB = parseAdaptiveTriggerLabel(genericCombinedMatch.captures[3])
+        priorityOrder = [triggerA.policy, triggerB.policy]
+        return buildAdaptiveSelectionPolicy(label, basePolicy, [triggerA, triggerB], priorityOrder)
+    end
+
+    genericSingleMatch = match(r"^adaptive_([a-z]+)__(.+)$", label)
+    if genericSingleMatch !== nothing
+        basePolicy = Symbol(uppercase(genericSingleMatch.captures[1]))
+        trigger = parseAdaptiveTriggerLabel(genericSingleMatch.captures[2])
+        return buildAdaptiveSelectionPolicy(label, basePolicy, [trigger], [trigger.policy])
+    end
+
+    try
+        trigger = parseAdaptiveTriggerLabel(label)
+        return buildAdaptiveSelectionPolicy(label, :FIFO, [trigger], [trigger.policy])
+    catch err
+        error("Label bestPolicyLabels non valida: $(label). Errore: $(err)")
+    end
+end
+
+function buildBestSelectionRules(labels, cfg)::Vector{SelectionPolicy}
+    policies = SelectionPolicy[]
+    for label in labels
+        push!(policies, parseBestPolicyLabel(String(label), cfg))
+    end
+    return policies
+end
 
 
 end #quello del modulo

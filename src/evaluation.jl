@@ -7,6 +7,13 @@ using Plots
 using Statistics
 
 using Main.configdata: SimConfig, relativeHeatmapColors, surfacePlotColors, validateConfig
+using Main.adaptivemetadata: METADATA_COLUMNS,
+                             addAdaptiveMetadataColumns!,
+                             combinedAxisColumnsFromLabels,
+                             combinedAxisColumnsFromFrame,
+                             scenarioAxisColumns,
+                             scenarioMetadataTuple,
+                             thresholdDisplayName
 
 export performEvaluation
 
@@ -221,36 +228,35 @@ function save_timing_overview(input_dir::String, output_dir::String)
     CSV.write(joinpath(output_dir, "timing_overview.csv"), build_timing_overview(input_dir))
 end
 
-function parse_combined_scenario(label)
-    match_scenario = match(r"^queue_(\d+)__slack_([0-9]+(?:\.[0-9]+)?)$", String(label))
-    match_scenario === nothing && return nothing
-    return (
-        queue_threshold = parse(Int, match_scenario.captures[1]),
-        slack_threshold = parse(Float64, match_scenario.captures[2]),
-    )
-end
-
 function combined_scenario_infos(results_dir::String)
     infos = NamedTuple[]
     for folder in readdir(results_dir; join = true)
         !isdir(folder) && continue
         label = basename(folder)
-        parsed = parse_combined_scenario(label)
-        parsed === nothing && continue
+        axisColumns = scenarioAxisColumns(label)
+        length(axisColumns) == 2 || continue
         isfile(joinpath(folder, "anovaRef.csv")) || continue
         push!(infos, (
             scenario = label,
-            queue_threshold = parsed.queue_threshold,
-            slack_threshold = parsed.slack_threshold,
+            axis_columns = axisColumns,
             path = folder,
         ))
     end
-    sort!(infos, by = info -> (info.queue_threshold, info.slack_threshold))
+    sort!(infos, by = info -> begin
+        metadata = scenarioMetadataTuple(info.scenario)
+        Tuple(Float64(getproperty(metadata, column)) for column in info.axis_columns)
+    end)
     return infos
 end
 
 function is_combined_campaign(results_dir::String)::Bool
-    return !isempty(combined_scenario_infos(results_dir))
+    labels = String[]
+    for folder in readdir(results_dir; join = true)
+        !isdir(folder) && continue
+        isfile(joinpath(folder, "anovaRef.csv")) || continue
+        push!(labels, basename(folder))
+    end
+    return !isempty(labels) && combinedAxisColumnsFromLabels(labels) !== nothing
 end
 
 function required_anova_summary_file(input_dir::String)::String
@@ -288,80 +294,157 @@ function load_combined_anova_refs(infos)::DataFrame
     rows = DataFrame[]
     for info in infos
         df = CSV.read(joinpath(info.path, "anovaRef.csv"), DataFrame)
-        if "policy" ∉ names(df)
+        if !("policy" in names(df))
             insertcols!(df, 1, :policy => fill(info.scenario, nrow(df)))
         end
         df.scenario = fill(info.scenario, nrow(df))
-        df.queue_threshold = fill(info.queue_threshold, nrow(df))
-        df.slack_threshold = fill(info.slack_threshold, nrow(df))
+        addAdaptiveMetadataColumns!(df, :policy)
         push!(rows, df)
     end
 
     isempty(rows) && error("No valid combined scenario folder found")
     df = vcat(rows...)
-    sort!(df, [:queue_threshold, :slack_threshold, :replication_id])
+    axisColumns = combinedAxisColumnsFromFrame(df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati")
+    sort!(df, vcat(axisColumns, [:replication_id]))
+    return df
+end
+
+function firstValue(subdf::SubDataFrame, column::Symbol)
+    column in propertynames(subdf) || return missing
+    return subdf[1, column]
+end
+
+function dataframeFromDictRows(rows::Vector{Dict{Symbol, Any}})::DataFrame
+    df = DataFrame()
+    for row in rows
+        columns = collect(keys(row))
+        values = Tuple(row[column] for column in columns)
+        push!(df, NamedTuple{Tuple(columns)}(values); cols = :union)
+    end
     return df
 end
 
 function combined_surface_summary(df::DataFrame)::DataFrame
-    rows = NamedTuple[]
+    axisColumns = combinedAxisColumnsFromFrame(df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati per surface summary")
+
+    rows = Dict{Symbol, Any}[]
     for spec in COMBINED_KPI_SPECS
         spec.column in propertynames(df) || continue
-        for subdf in groupby(df, [:queue_threshold, :slack_threshold])
+        for subdf in groupby(df, axisColumns)
             values = Float64.(subdf[!, spec.column])
-            push!(rows, (
-                metric = String(spec.column),
-                title = spec.title,
-                direction = spec.higher_is_better ? "higher is better" : "lower is better",
-                queue_threshold = Int(subdf.queue_threshold[1]),
-                slack_threshold = Float64(subdf.slack_threshold[1]),
-                mean = mean(values),
-                std = length(values) > 1 ? std(values) : 0.0,
-                min = minimum(values),
-                max = maximum(values),
-                replications = length(values),
-            ))
+            alternative = :scenario in propertynames(subdf) ?
+                String(firstValue(subdf, :scenario)) :
+                join(["$(column)=$(firstValue(subdf, column))" for column in axisColumns], "__")
+            row = Dict{Symbol, Any}(
+                :metric => String(spec.column),
+                :title => spec.title,
+                :direction => spec.higher_is_better ? "higher is better" : "lower is better",
+                :alternative => alternative,
+                :mean => mean(values),
+                :std => length(values) > 1 ? std(values) : 0.0,
+                :min => minimum(values),
+                :max => maximum(values),
+                :replications => length(values),
+            )
+            for column in METADATA_COLUMNS
+                row[column] = firstValue(subdf, column)
+            end
+            push!(rows, row)
         end
     end
 
-    out = DataFrame(rows)
-    !isempty(out) && sort!(out, [:metric, :queue_threshold, :slack_threshold])
+    out = dataframeFromDictRows(rows)
+    !isempty(out) && sort!(out, vcat([:metric], axisColumns))
     return out
 end
 
 function combined_best_by_kpi(summary_df::DataFrame)::DataFrame
-    rows = NamedTuple[]
+    axisColumns = combinedAxisColumnsFromFrame(summary_df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati per best by KPI")
+
+    rows = Dict{Symbol, Any}[]
     for spec in COMBINED_KPI_SPECS
         metric_df = summary_df[summary_df.metric .== String(spec.column), :]
         nrow(metric_df) == 0 && continue
         order = sortperm(Float64.(metric_df.mean); rev = spec.higher_is_better)
         best = metric_df[order[1], :]
-        push!(rows, (
-            metric = String(spec.column),
-            title = spec.title,
-            direction = spec.higher_is_better ? "higher is better" : "lower is better",
-            queue_threshold = Int(best.queue_threshold),
-            slack_threshold = Float64(best.slack_threshold),
-            mean = Float64(best.mean),
-            std = Float64(best.std),
-            replications = Int(best.replications),
-        ))
+        row = Dict{Symbol, Any}(
+            :metric => String(spec.column),
+            :title => spec.title,
+            :direction => spec.higher_is_better ? "higher is better" : "lower is better",
+            :alternative => String(best.alternative),
+            :mean => Float64(best.mean),
+            :std => Float64(best.std),
+            :replications => Int(best.replications),
+        )
+        for column in METADATA_COLUMNS
+            row[column] = column in propertynames(summary_df) ? best[column] : missing
+        end
+        push!(rows, row)
     end
-    return DataFrame(rows)
+    return dataframeFromDictRows(rows)
+end
+
+function legacyCombinedAlternative(row)::String
+    queue = Int(round(Float64(row[:spt_queue_threshold])))
+    slack = Float64(row[:minslack_slack_threshold])
+    return "queue_$(lpad(queue, 3, '0'))__slack_$(slack)"
+end
+
+function ensure_combined_summary_metadata!(summary_df::DataFrame)::DataFrame
+    axisColumns = combinedAxisColumnsFromFrame(summary_df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati nel summary")
+
+    if !(:alternative in propertynames(summary_df))
+        if axisColumns == [:spt_queue_threshold, :minslack_slack_threshold]
+            summary_df[!, :alternative] = [legacyCombinedAlternative(row) for row in eachrow(summary_df)]
+        else
+            summary_df[!, :alternative] = [
+                join(["$(column)=$(row[column])" for column in axisColumns], "__")
+                for row in eachrow(summary_df)
+            ]
+        end
+    end
+
+    metadataRows = [scenarioMetadataTuple(String(label)) for label in summary_df.alternative]
+    for column in METADATA_COLUMNS
+        values = [getproperty(row, column) for row in metadataRows]
+        if column in propertynames(summary_df)
+            current = summary_df[!, column]
+            summary_df[!, column] = [
+                ismissing(current[idx]) ? values[idx] : current[idx]
+                for idx in eachindex(values)
+            ]
+        else
+            summary_df[!, column] = values
+        end
+    end
+
+    legacyColumns = [:queue_threshold, :slack_threshold]
+    keepColumns = [column for column in propertynames(summary_df) if !(column in legacyColumns)]
+    select!(summary_df, keepColumns)
+    return summary_df
 end
 
 function combined_grid_matrix(summary_df::DataFrame, metric::Symbol)
+    axisColumns = combinedAxisColumnsFromFrame(summary_df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati per grid matrix")
+    yColumn, xColumn = axisColumns
     metric_df = summary_df[summary_df.metric .== String(metric), :]
-    queues = sort(unique(Int.(metric_df.queue_threshold)))
-    slacks = sort(unique(Float64.(metric_df.slack_threshold)))
-    matrix = fill(NaN, length(queues), length(slacks))
-    queue_idx = Dict(value => idx for (idx, value) in enumerate(queues))
-    slack_idx = Dict(value => idx for (idx, value) in enumerate(slacks))
+    yValues = sort(unique(Float64.(metric_df[!, yColumn])))
+    xValues = sort(unique(Float64.(metric_df[!, xColumn])))
+    matrix = fill(NaN, length(yValues), length(xValues))
+    yIdx = Dict(value => idx for (idx, value) in enumerate(yValues))
+    xIdx = Dict(value => idx for (idx, value) in enumerate(xValues))
 
     for row in eachrow(metric_df)
-        matrix[queue_idx[Int(row.queue_threshold)], slack_idx[Float64(row.slack_threshold)]] = Float64(row.mean)
+        yValue = Float64(row[yColumn])
+        xValue = Float64(row[xColumn])
+        matrix[yIdx[yValue], xIdx[xValue]] = Float64(row.mean)
     end
-    return queues, slacks, matrix
+    return yValues, xValues, matrix, yColumn, xColumn
 end
 
 function surface_color_scale(higher_is_better::Bool)
@@ -372,13 +455,13 @@ function surface_color_scale(higher_is_better::Bool)
 end
 
 function save_combined_surface_plot(summary_df::DataFrame, spec, output_dir::String)
-    queues, slacks, matrix = combined_grid_matrix(summary_df, spec.column)
+    yValues, xValues, matrix, yColumn, xColumn = combined_grid_matrix(summary_df, spec.column)
     p = surface(
-        slacks,
-        queues,
+        xValues,
+        yValues,
         matrix;
-        xlabel = "Slack Threshold",
-        ylabel = "Queue Threshold",
+        xlabel = thresholdDisplayName(xColumn),
+        ylabel = thresholdDisplayName(yColumn),
         zlabel = spec.title,
         title = "$(spec.title) Surface",
         color = surface_color_scale(spec.higher_is_better),
@@ -394,14 +477,14 @@ function save_combined_surface_plot(summary_df::DataFrame, spec, output_dir::Str
 end
 
 function combined_contour_plot(summary_df::DataFrame, spec; compact::Bool = false)
-    queues, slacks, matrix = combined_grid_matrix(summary_df, spec.column)
+    yValues, xValues, matrix, yColumn, xColumn = combined_grid_matrix(summary_df, spec.column)
     return heatmap(
-        slacks,
-        queues,
+        xValues,
+        yValues,
         matrix;
-        xlabel = compact ? "" : "Slack Threshold",
-        ylabel = compact ? "" : "Queue Threshold",
-        title = compact ? spec.title : "$(spec.title): Mean By Queue And Slack Threshold",
+        xlabel = compact ? "" : thresholdDisplayName(xColumn),
+        ylabel = compact ? "" : thresholdDisplayName(yColumn),
+        title = compact ? spec.title : "$(spec.title): Mean By $(thresholdDisplayName(yColumn)) And $(thresholdDisplayName(xColumn))",
         color = surface_color_scale(spec.higher_is_better),
         colorbar_title = compact ? "" : spec.title,
         size = compact ? (1100, 800) : (1200, 820),
@@ -421,7 +504,10 @@ function save_combined_contour_plot(summary_df::DataFrame, spec, output_dir::Str
     savefig(p, joinpath(heatmap_dir, "contour_$(sanitize_filename(String(spec.column))).png"))
 end
 
-function combined_dashboard_note_plot()
+function combined_dashboard_note_plot(summary_df::DataFrame)
+    axisColumns = combinedAxisColumnsFromFrame(summary_df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati per dashboard")
+    yColumn, xColumn = axisColumns
     p = plot(
         xlims = (0, 1),
         ylims = (0, 1),
@@ -433,7 +519,7 @@ function combined_dashboard_note_plot()
     )
     annotate!(p, 0.5, 0.58, text("Legend", 24, :center, :black))
     annotate!(p, 0.5, 0.46, text("Each cell is the mean over replications", 20, :center, :black))
-    annotate!(p, 0.5, 0.36, text("X = slack threshold, Y = queue threshold", 20, :center, :black))
+    annotate!(p, 0.5, 0.36, text("X = $(thresholdDisplayName(xColumn)), Y = $(thresholdDisplayName(yColumn))", 20, :center, :black))
     annotate!(p, 0.5, 0.26, text("Green = better for that KPI", 20, :center, :black))
     annotate!(p, 0.5, 0.16, text("Red = worse for that KPI", 20, :center, :black))
     return p
@@ -441,7 +527,7 @@ end
 
 function save_combined_dashboard(summary_df::DataFrame, output_dir::String)
     plots = [combined_contour_plot(summary_df, spec; compact = true) for spec in COMBINED_KPI_SPECS if String(spec.column) in unique(String.(summary_df.metric))]
-    push!(plots, combined_dashboard_note_plot())
+    push!(plots, combined_dashboard_note_plot(summary_df))
     dashboard = plot(
         plots...;
         layout = (3, 3),
@@ -454,13 +540,17 @@ function save_combined_dashboard(summary_df::DataFrame, output_dir::String)
 end
 
 function build_combined_report(output_path::String, input_dir::String, output_dir::String, summary_df::DataFrame, best_df::DataFrame, pareto_exact::DataFrame, pareto_tolerance::DataFrame, pareto_cuts::DataFrame; tolerance_percent::Float64)
+    axisColumns = combinedAxisColumnsFromFrame(summary_df)
+    axisText = axisColumns === nothing ?
+        "adaptive threshold columns" :
+        join(thresholdDisplayName.(axisColumns), " and ")
     io = IOBuffer()
     println(io, "# Combined Adaptive Surface Report")
     println(io)
     println(io, "## Summary")
     println(io, "- input directory: `$(input_dir)`")
     println(io, "- output directory: `$(output_dir)`")
-    println(io, "- scenarios are parsed as `queue_threshold` and `slack_threshold` from folders like `queue_003__slack_10.0`")
+    println(io, "- scenarios are parsed through policy-specific axes: $(axisText)")
     println(io, "- this report evaluates this campaign only; it does not compare SPT-first against SLACK-first")
     println(io, "- dashboard: `dash_combined_surface.png`")
     println(io, "- contour heatmaps are saved in `heatmaps/`")
@@ -492,7 +582,7 @@ function build_combined_report(output_path::String, input_dir::String, output_di
     println(io, markdown_table(cut_summary; max_rows = nrow(cut_summary)))
     println(io)
     println(io, "## Reading Notes")
-    println(io, "- Surface plots show the average KPI over replications for every `(queue, slack)` pair.")
+    println(io, "- Surface plots show the average KPI over replications for every adaptive threshold pair.")
     println(io, "- Contour heatmaps are the readable control view for the same surfaces.")
     println(io, "- `combined_global_pareto_plot.png` shows global 3D Pareto points and highlights the Pareto points for each 2D cut.")
     println(io, "- `combined_pareto_grid.png` marks exact global 3D Pareto grid points in green and post-Pareto within-tolerance alternatives in yellow.")
@@ -507,6 +597,7 @@ function perform_combined_evaluation(; input_dir::String, output_dir::String)
     tolerance_percent = pareto_tolerance_percent()
     anova_summary_file = require_anova_summary(input_dir)
     summary_df = CSV.read(anova_summary_file, DataFrame)
+    ensure_combined_summary_metadata!(summary_df)
     best_df = combined_best_by_kpi(summary_df)
     pareto_source = combined_summary_to_global_pareto_source(summary_df)
     pareto_exact = global_pareto_table(pareto_source)
@@ -773,50 +864,72 @@ function metric_spec(column::Symbol)
 end
 
 function policy_summary_to_global_pareto_source(summary_df::DataFrame)::DataFrame
-    rows = NamedTuple[]
+    rows = Dict{Symbol, Any}[]
     for policy_df in groupby(summary_df, :policy)
         policy = String(policy_df.policy[1])
         values = Dict(Symbol(row.metric) => Float64(row.mean) for row in eachrow(policy_df))
         missing_metrics = [spec.column for spec in GLOBAL_PARETO_SPECS if !haskey(values, spec.column)]
         isempty(missing_metrics) || error("Missing global Pareto metrics for $(policy): $(missing_metrics)")
 
-        push!(rows, (
-            alternative = policy,
-            policy = policy,
-            policy_rule = policy_rule_name(policy),
-            simtime = values[:simtime],
-            ontime_share = values[:ontime_share],
-            mean_processing_ratio = values[:mean_processing_ratio],
-        ))
+        firstRow = policy_df[1, :]
+        row = Dict{Symbol, Any}(
+            :alternative => policy,
+            :policy => policy,
+            :policy_rule => policy_rule_name(policy),
+            :simtime => values[:simtime],
+            :ontime_share => values[:ontime_share],
+            :mean_processing_ratio => values[:mean_processing_ratio],
+        )
+        for column in METADATA_COLUMNS
+            row[column] = column in propertynames(summary_df) ? firstRow[column] : missing
+        end
+        push!(rows, row)
     end
-    df = DataFrame(rows)
+    df = dataframeFromDictRows(rows)
     sort!(df, :policy; by = policy_label_key)
     return df
 end
 
 function combined_summary_to_global_pareto_source(summary_df::DataFrame)::DataFrame
-    rows = NamedTuple[]
-    key_df = unique(summary_df[:, [:queue_threshold, :slack_threshold]])
-    sort!(key_df, [:queue_threshold, :slack_threshold])
+    axisColumns = combinedAxisColumnsFromFrame(summary_df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati per Pareto source")
+    keyColumns = :alternative in propertynames(summary_df) ? [:alternative] : axisColumns
+    rows = Dict{Symbol, Any}[]
+    key_df = unique(summary_df[:, keyColumns])
+    sort!(key_df, keyColumns)
 
     for key in eachrow(key_df)
-        queue = Int(key.queue_threshold)
-        slack = Float64(key.slack_threshold)
-        scenario_df = summary_df[(summary_df.queue_threshold .== queue) .& (summary_df.slack_threshold .== slack), :]
+        mask = trues(nrow(summary_df))
+        for column in keyColumns
+            mask .&= summary_df[!, column] .== key[column]
+        end
+        scenario_df = summary_df[mask, :]
         values = Dict(Symbol(row.metric) => Float64(row.mean) for row in eachrow(scenario_df))
         missing_metrics = [spec.column for spec in GLOBAL_PARETO_SPECS if !haskey(values, spec.column)]
-        isempty(missing_metrics) || error("Missing global Pareto metrics for queue=$(queue), slack=$(slack): $(missing_metrics)")
+        alternative = if :alternative in propertynames(summary_df)
+            String(key.alternative)
+        elseif axisColumns == [:spt_queue_threshold, :minslack_slack_threshold]
+            queue = Int(round(Float64(key[:spt_queue_threshold])))
+            slack = Float64(key[:minslack_slack_threshold])
+            "queue_$(lpad(queue, 3, '0'))__slack_$(slack)"
+        else
+            join(["$(column)=$(key[column])" for column in axisColumns], "__")
+        end
+        isempty(missing_metrics) || error("Missing global Pareto metrics for $(alternative): $(missing_metrics)")
 
-        push!(rows, (
-            alternative = "queue_$(lpad(queue, 3, '0'))__slack_$(slack)",
-            queue_threshold = queue,
-            slack_threshold = slack,
-            simtime = values[:simtime],
-            ontime_share = values[:ontime_share],
-            mean_processing_ratio = values[:mean_processing_ratio],
-        ))
+        firstRow = scenario_df[1, :]
+        row = Dict{Symbol, Any}(
+            :alternative => alternative,
+            :simtime => values[:simtime],
+            :ontime_share => values[:ontime_share],
+            :mean_processing_ratio => values[:mean_processing_ratio],
+        )
+        for column in METADATA_COLUMNS
+            row[column] = column in propertynames(summary_df) ? firstRow[column] : missing
+        end
+        push!(rows, row)
     end
-    return DataFrame(rows)
+    return dataframeFromDictRows(rows)
 end
 
 function dominates_alternative(candidate, target, specs)::Bool
@@ -887,10 +1000,8 @@ function combined_pareto_cuts_table(source_df::DataFrame)::DataFrame
     simtime_processing = pareto_flags(df, [metric_spec(:simtime), metric_spec(:mean_processing_ratio)])
     ontime_processing = pareto_flags(df, [metric_spec(:ontime_share), metric_spec(:mean_processing_ratio)])
 
-    return DataFrame(
+    out = DataFrame(
         alternative = String.(df.alternative),
-        queue_threshold = Int.(df.queue_threshold),
-        slack_threshold = Float64.(df.slack_threshold),
         simtime = Float64.(df.simtime),
         ontime_share = Float64.(df.ontime_share),
         mean_processing_ratio = Float64.(df.mean_processing_ratio),
@@ -900,38 +1011,46 @@ function combined_pareto_cuts_table(source_df::DataFrame)::DataFrame
         pareto_any_cut = simtime_ontime .| simtime_processing .| ontime_processing,
         pareto_all_cuts = simtime_ontime .& simtime_processing .& ontime_processing,
     )
+    for column in METADATA_COLUMNS
+        out[!, column] = column in propertynames(df) ? df[!, column] : fill(missing, nrow(df))
+    end
+    return out
 end
 
 function combined_within_tolerance_cuts_table(tolerance_df::DataFrame)::DataFrame
     within_df = tolerance_df[tolerance_df.within_pareto_tolerance .== true, :]
 
     if nrow(within_df) == 0
-        return DataFrame(
+        out = DataFrame(
             alternative = String[],
-            queue_threshold = Int64[],
-            slack_threshold = Float64[],
             within_pareto_simtime_ontime = Bool[],
             within_pareto_simtime_processing = Bool[],
             within_pareto_ontime_processing = Bool[],
             within_pareto_any_cut = Bool[],
             within_pareto_all_cuts = Bool[],
         )
+        for column in METADATA_COLUMNS
+            out[!, column] = Any[]
+        end
+        return out
     end
 
     simtime_ontime = pareto_flags(within_df, [metric_spec(:simtime), metric_spec(:ontime_share)])
     simtime_processing = pareto_flags(within_df, [metric_spec(:simtime), metric_spec(:mean_processing_ratio)])
     ontime_processing = pareto_flags(within_df, [metric_spec(:ontime_share), metric_spec(:mean_processing_ratio)])
 
-    return DataFrame(
+    out = DataFrame(
         alternative = String.(within_df.alternative),
-        queue_threshold = Int.(within_df.queue_threshold),
-        slack_threshold = Float64.(within_df.slack_threshold),
         within_pareto_simtime_ontime = simtime_ontime,
         within_pareto_simtime_processing = simtime_processing,
         within_pareto_ontime_processing = ontime_processing,
         within_pareto_any_cut = simtime_ontime .| simtime_processing .| ontime_processing,
         within_pareto_all_cuts = simtime_ontime .& simtime_processing .& ontime_processing,
     )
+    for column in METADATA_COLUMNS
+        out[!, column] = column in propertynames(within_df) ? within_df[!, column] : fill(missing, nrow(within_df))
+    end
+    return out
 end
 
 function add_within_tolerance_cut_flags!(tolerance_df::DataFrame, tolerance_cuts_df::DataFrame)::DataFrame
@@ -1352,35 +1471,38 @@ function save_combined_global_pareto_plot(tolerance_df::DataFrame, cuts_df::Data
 end
 
 function save_combined_pareto_grid(summary_df::DataFrame, pareto_df::DataFrame, tolerance_df::DataFrame, cuts_df::DataFrame, output_dir::String; tolerance_percent::Float64)
-    queues = sort(unique(Int.(summary_df.queue_threshold)))
-    slacks = sort(unique(Float64.(summary_df.slack_threshold)))
-    matrix = zeros(Float64, length(queues), length(slacks))
-    queue_idx = Dict(value => idx for (idx, value) in enumerate(queues))
-    slack_idx = Dict(value => idx for (idx, value) in enumerate(slacks))
+    axisColumns = combinedAxisColumnsFromFrame(summary_df)
+    axisColumns === nothing && error("Impossibile rilevare assi adaptive combinati per Pareto grid")
+    yColumn, xColumn = axisColumns
+    yValues = sort(unique(Float64.(summary_df[!, yColumn])))
+    xValues = sort(unique(Float64.(summary_df[!, xColumn])))
+    matrix = zeros(Float64, length(yValues), length(xValues))
+    yIdx = Dict(value => idx for (idx, value) in enumerate(yValues))
+    xIdx = Dict(value => idx for (idx, value) in enumerate(xValues))
 
     for row in eachrow(tolerance_df[tolerance_df.within_pareto_tolerance .== true, :])
-        queue = Int(row.queue_threshold)
-        slack = Float64(row.slack_threshold)
-        haskey(queue_idx, queue) && haskey(slack_idx, slack) || continue
-        matrix[queue_idx[queue], slack_idx[slack]] = 1.0
+        yValue = Float64(row[yColumn])
+        xValue = Float64(row[xColumn])
+        haskey(yIdx, yValue) && haskey(xIdx, xValue) || continue
+        matrix[yIdx[yValue], xIdx[xValue]] = 1.0
     end
 
     for row in eachrow(cuts_df[cuts_df.pareto_any_cut .== true, :])
-        queue = Int(row.queue_threshold)
-        slack = Float64(row.slack_threshold)
-        haskey(queue_idx, queue) && haskey(slack_idx, slack) || continue
-        matrix[queue_idx[queue], slack_idx[slack]] = 2.0
+        yValue = Float64(row[yColumn])
+        xValue = Float64(row[xColumn])
+        haskey(yIdx, yValue) && haskey(xIdx, xValue) || continue
+        matrix[yIdx[yValue], xIdx[xValue]] = 2.0
     end
 
     p = heatmap(
-        slacks,
-        queues,
+        xValues,
+        yValues,
         matrix;
         color = cgrad([:white, :gold, :green3], [0.0, 0.5, 1.0]),
         clims = (0.0, 2.0),
         colorbar = false,
-        xlabel = "Slack Threshold",
-        ylabel = "Queue Threshold",
+        xlabel = thresholdDisplayName(xColumn),
+        ylabel = thresholdDisplayName(yColumn),
         title = "Combined Pareto Decision Grid",
         size = (1800, 1100),
         titlefontsize = 18,
@@ -1394,8 +1516,8 @@ function save_combined_pareto_grid(summary_df::DataFrame, pareto_df::DataFrame, 
     if nrow(global_rows) > 0
         scatter!(
             p,
-            Float64.(global_rows.slack_threshold),
-            Int.(global_rows.queue_threshold);
+            Float64.(global_rows[!, xColumn]),
+            Float64.(global_rows[!, yColumn]);
             label = "Global Pareto",
             markershape = :circle,
             markercolor = :black,
@@ -1409,8 +1531,8 @@ function save_combined_pareto_grid(summary_df::DataFrame, pareto_df::DataFrame, 
         if nrow(star_rows) > 0
             scatter!(
                 p,
-                Float64.(star_rows.slack_threshold),
-                Int.(star_rows.queue_threshold);
+                Float64.(star_rows[!, xColumn]),
+                Float64.(star_rows[!, yColumn]);
                 label = "Within tolerance all cuts",
                 markershape = :star5,
                 markercolor = :green3,
@@ -1623,6 +1745,7 @@ function performEvaluation(; input_dir::String = INPUT_RESULTS_DIR, output_dir::
     tolerance_percent = pareto_tolerance_percent()
     anova_summary_file = require_anova_summary(input_dir)
     anova_summary_df = CSV.read(anova_summary_file, DataFrame)
+    addAdaptiveMetadataColumns!(anova_summary_df, :policy)
     infos = policy_infos(input_dir)
     summary_df = build_policy_code_kpis(infos)
     ranking_df, pareto_df = build_rankings(summary_df)

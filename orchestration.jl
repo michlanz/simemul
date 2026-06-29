@@ -1,20 +1,54 @@
 module orchestration
 
+using Main.adaptivemetadata: combinedAxisColumnsFromLabels
+
 export runCampaign
 
 const SIMULATION_RUN_MODES = (
     :static,
-    :adaptive_spt,
-    :adaptive_slack,
-    :adaptive_combined_spt_first,
-    :adaptive_combined_slack_first,
+    :best,
+    :adaptive_first,
+    :adaptive_second,
+    :combined_first,
+    :combined_second,
 )
 
 campaignName(::Val{:static}) = "static"
-campaignName(::Val{:adaptive_spt}) = "adaptiveSPT"
-campaignName(::Val{:adaptive_slack}) = "adaptiveSLACK"
-campaignName(::Val{:adaptive_combined_spt_first}) = "adaptive_comb_SPTfirst"
-campaignName(::Val{:adaptive_combined_slack_first}) = "adaptive_comb_SLACKfirst"
+campaignName(::Val{:best}) = "best"
+
+function policySlug(policy::Symbol)::String
+    return lowercase(String(policy))
+end
+
+function configuredAdaptivePolicies()
+    policies = collect(Main.configdata.adaptivePolicies)
+    isempty(policies) && error("adaptivePolicies e vuoto")
+    return policies
+end
+
+function campaignName(::Val{:adaptive_first})
+    policies = configuredAdaptivePolicies()
+    length(policies) >= 1 || error("adaptivePolicies deve contenere almeno una policy per :adaptive_first")
+    return "adaptive_$(policySlug(Main.configdata.adaptiveBasePolicy))_$(policySlug(policies[1]))"
+end
+
+function campaignName(::Val{:adaptive_second})
+    policies = configuredAdaptivePolicies()
+    length(policies) >= 2 || error("adaptivePolicies deve contenere almeno due policy per :adaptive_second")
+    return "adaptive_$(policySlug(Main.configdata.adaptiveBasePolicy))_$(policySlug(policies[2]))"
+end
+
+function campaignName(::Val{:combined_first})
+    policies = configuredAdaptivePolicies()
+    length(policies) >= 2 || error("adaptivePolicies deve contenere almeno due policy per :combined_first")
+    return "combined_$(policySlug(Main.configdata.adaptiveBasePolicy))_$(policySlug(policies[1]))_first_$(policySlug(policies[2]))"
+end
+
+function campaignName(::Val{:combined_second})
+    policies = configuredAdaptivePolicies()
+    length(policies) >= 2 || error("adaptivePolicies deve contenere almeno due policy per :combined_second")
+    return "combined_$(policySlug(Main.configdata.adaptiveBasePolicy))_$(policySlug(policies[2]))_first_$(policySlug(policies[1]))"
+end
 
 isSimulationRunMode(runMode::Symbol)::Bool = runMode in SIMULATION_RUN_MODES
 campaignPath(runNumber::Int, runMode::Symbol)::String = "r$(runNumber)_$(campaignName(Val(runMode)))"
@@ -96,12 +130,14 @@ end
 function isCombinedAnalysisPath(path::String)::Bool
     isdir(path) || return false
 
+    labels = String[]
     for item in readdir(path)
         isdir(joinpath(path, item)) || continue
-        match(r"^queue_\d+__slack_[0-9]+(?:\.[0-9]+)?$", item) !== nothing && return true
+        isfile(joinpath(path, item, "anovaRef.csv")) || continue
+        push!(labels, item)
     end
 
-    return false
+    return !isempty(labels) && combinedAxisColumnsFromLabels(labels) !== nothing
 end
 
 function requiredAnovaOutput(path::String)::String
@@ -129,11 +165,9 @@ end
 function runCampaign(
     runModesInput,
     analysisRunModesInput,
-    exPostRunModesInput = analysisRunModesInput,
 )
     runModes = normalizeRunModes(runModesInput)
     analysisRunModes = normalizeRunModes(analysisRunModesInput)
-    exPostRunModes = normalizeRunModes(exPostRunModesInput)
 
     plannedPaths = plannedCampaignPaths(runModes)
 
@@ -142,26 +176,35 @@ function runCampaign(
         for analysisRunMode in analysisRunModes
     ]
 
-    exPostPathsPlanned = [
-        (runMode = exPostRunMode, path = analysisCampaignPath(plannedPaths, exPostRunMode))
-        for exPostRunMode in exPostRunModes
-    ]
-
     for runMode in runModes
-        if runMode == :adaptive_spt
-            Main.simEmul.simemAdaptiveSPT(plannedCampaignPath(plannedPaths, runMode))
 
-        elseif runMode == :adaptive_slack
-            Main.simEmul.simemAdaptiveSlack(plannedCampaignPath(plannedPaths, runMode))
+        if runMode == :adaptive_first
+            policies = configuredAdaptivePolicies()
+            length(policies) >= 1 || error("adaptivePolicies deve contenere almeno una policy per :adaptive_first")
+            Main.simEmul.simemAdaptiveSingle(
+                plannedCampaignPath(plannedPaths, runMode),
+                policies[1],
+            )
 
-        elseif runMode == :adaptive_combined_spt_first
-            Main.simEmul.simemAdaptiveCombinedSPTFirst(plannedCampaignPath(plannedPaths, runMode))
+        elseif runMode == :adaptive_second
+            policies = configuredAdaptivePolicies()
+            length(policies) >= 2 || error("adaptivePolicies deve contenere almeno due policy per :adaptive_second")
+            Main.simEmul.simemAdaptiveSingle(
+                plannedCampaignPath(plannedPaths, runMode),
+                policies[2],
+            )
 
-        elseif runMode == :adaptive_combined_slack_first
-            Main.simEmul.simemAdaptiveCombinedSlackFirst(plannedCampaignPath(plannedPaths, runMode))
+        elseif runMode == :combined_first
+            Main.simEmul.simemCombinedFirst(plannedCampaignPath(plannedPaths, runMode))
+
+        elseif runMode == :combined_second
+            Main.simEmul.simemCombinedSecond(plannedCampaignPath(plannedPaths, runMode))
 
         elseif runMode == :static
             Main.simEmul.simem(plannedCampaignPath(plannedPaths, runMode))
+
+        elseif runMode == :best
+            Main.simEmul.simemBest(plannedCampaignPath(plannedPaths, runMode))
 
         elseif runMode == :anova
             for analysis in analysisPaths
@@ -182,18 +225,11 @@ function runCampaign(
                 )
             end
 
+        elseif runMode == :find_best
+            Main.findbest.performFindBest()
+
         elseif runMode == :ex_post
-            exPostPaths = Dict{Symbol, String}()
-
-            for analysis in exPostPathsPlanned
-                ensureAnovaForEvaluation!(analysis.path)
-                exPostPaths[analysis.runMode] = analysis.path
-            end
-
-            Main.showexpost.performExPostEvaluation(
-                input_dirs = exPostPaths,
-                output_dir = "r_ex_post_evaluation",
-            )
+            Main.showexpost.performRangeExPostEvaluation()
 
         else
             error("Unknown runMode: $(runMode)")

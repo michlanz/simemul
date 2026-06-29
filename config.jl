@@ -9,8 +9,16 @@ export SimConfig,
        relativeHeatmapColors,
        surfacePlotColors,
        buildSeeds,
+       adaptiveBasePolicy,
+       adaptivePolicies,
+       adaptiveThresholdSpecs,
        analysisRunModes,
-       exPostRunModes,
+       bestPolicyLabels,
+       exPostOutputDir,
+       exPostRunRange,
+       findBestOutputDir,
+       findBestParetoMetrics,
+       findBestRunNumbers,
        makespanComponentColors,
        runModes,
        seriesColors,
@@ -18,42 +26,86 @@ export SimConfig,
 
 # ========     CONFIGURAZIONE PIPELINE     ===================================
 
+# Campagne da usare quando runModes contiene :figures, :anova o :evaluation.
+# Per analizzare l'ultima campagna best prodotta, lascia :best.
 const analysisRunModes = [
-     :static,
-     :adaptive_spt,
-     :adaptive_slack,
-     :adaptive_combined_spt_first,
-     :adaptive_combined_slack_first,
+    :static,
+    :adaptive_first,
+    :adaptive_second,
+    :combined_first,
+    :combined_second,
+    :best,
 ]
 
-const exPostRunModes = [
-     :static,
-     :adaptive_spt,
-     :adaptive_slack,
-     :adaptive_combined_spt_first,
-     :adaptive_combined_slack_first,
-]
-
+# Modalita operative da lanciare.
+# :best usa bestPolicyLabels; :find_best genera suggerimenti copiabili.
 const runModes = [
+     #:best,
      #:static,
-     #:adaptive_spt,
-     #:adaptive_slack,
-     #:adaptive_combined_spt_first,
-     #:adaptive_combined_slack_first,
+     #:adaptive_first,
+     #:adaptive_second,
+     #:combined_first,
+     #:combined_second,
      #:figures,
      #:anova,
      #:evaluation,
+     #:find_best,
      :ex_post,
 ]
 
 
-# ========     CONFIGURAZIONE MODELLO     ====================================
+# Range di campagne usato da :ex_post per identificare le migliori policy.
+const exPostRunRange = 14:18
+const exPostOutputDir = "r14_18_ex_post"
 
+# ========     CONFIGURAZIONE FIND BEST     ==================================
+
+const findBestRunNumbers = 14:18
+const findBestOutputDir = "r14_18_find_best"
+const findBestParetoMetrics = (:simtime, :ontime_share, :mean_processing_ratio)
+
+# Lista manuale usata dalla run mode :best. Il file find_best_policy_labels.jl
+# prodotto da :find_best genera righe copiabili qui.
+const bestPolicyLabels = [
+    "02.FIFO",
+    "03.LIFO",
+    "04.SPT",
+    "06.EDD",
+    "07.MINSLACK",
+    "combined_queue_first__queue_003__slack_12.2",
+    "combined_queue_first__queue_003__slack_12.4",
+    "combined_queue_first__queue_004__slack_13.6",
+    "combined_slack_first__queue_003__slack_3.6",
+    "combined_slack_first__queue_003__slack_6.0",
+    "combined_slack_first__queue_003__slack_6.2",
+    "combined_slack_first__queue_004__slack_8.2",
+    "combined_slack_first__queue_016__slack_8.2",
+    "combined_slack_first__queue_020__slack_9.0",
+    "combined_slack_first__queue_021__slack_7.4",
+    "combined_slack_first__queue_022__slack_7.2",
+    "combined_slack_first__queue_022__slack_9.0",
+]
+
+# ========     CONFIGURAZIONE ADAPTIVE     ===================================
+
+const adaptiveBasePolicy = :LIFO
+const adaptivePolicies = [:SPT, :EDD]
+
+const adaptiveThresholdSpecs = (
+    SPT = (min = 3.0, max = 30.0, step = 1.0),
+    EDD = (min = 0.0, max = 16.0, step = 0.5),
+    MINSLACK = (min = 0.0, max = 16.0, step = 0.5),
+    CRITICALRATIO = (min = 0.1, max = 2.0, step = 0.1),
+)
+
+# ========     CONFIGURAZIONE MODELLO     ====================================
+#standard: 320 lotti, 80 ogni 40 ore, CV 0.1, offset 16-40 ore, 100 ripetizioni, seed 42
 Base.@kwdef struct SimConfig
-    clientNum::Int64 = 320
+    clientNum::Int64 = 40
     repetitions::Int64 = 100
     masterSeed::Int64 = 42
     paretoTolerancePercent::Float64 = 2.0
+    processingTimeCV::Float64 = 0.1
     inputPath::String = "inputfile"
     registryFile::String = "code_registry_3route_5client_norm.json"
     matrixFile::String = "lavoration_matrix.csv"
@@ -61,12 +113,12 @@ Base.@kwdef struct SimConfig
     releaseBatchSpacing::Float64 = 40.0
     dueDateMinOffset::Float64 = 16.0
     dueDateMaxOffset::Float64 = 40.0
-    adaptivePriorityOrder::Tuple{Symbol, Symbol} = (:SPT, :MINSLACK)
+    adaptivePriorityOrder::Tuple{Symbol, Symbol} = (:SPT, :MINSLACK) #TODO: SERVE ANCORA?
     adaptiveQueueMin::Int64 = 3
-    adaptiveQueueMax::Int64 = 50
+    adaptiveQueueMax::Int64 = 30
     adaptiveSlackMin::Float64 = 0.0
-    adaptiveSlackMax::Float64 = 14.0
-    adaptiveSlackStep::Float64 = 0.2
+    adaptiveSlackMax::Float64 = 16.0
+    adaptiveSlackStep::Float64 = 0.5
 end
 
 const DashboardColors = (
@@ -110,6 +162,7 @@ function validateConfig(cfg::SimConfig)::SimConfig
     cfg.adaptiveSlackStep > 0.0 || error("adaptiveSlackStep deve essere positivo")
     cfg.adaptiveSlackMax >= cfg.adaptiveSlackMin || error("adaptiveSlackMax deve essere maggiore o uguale a adaptiveSlackMin")
     cfg.paretoTolerancePercent >= 0.0 || error("paretoTolerancePercent non puo essere negativo")
+    cfg.processingTimeCV >= 0.0 || error("processingTimeCV non puo essere negativo")
     return cfg
 end
 

@@ -13,10 +13,20 @@ using Main.showevaluation: pareto_tolerance_percent,
                            pareto_tolerance_table,
                            markdown_table,
                            reset_output_dir
+using Main.configdata: exPostOutputDir,
+                       exPostRunRange
 
-export performExPostEvaluation
+export performExPostEvaluation,
+       performRangeExPostEvaluation
 
 const EX_POST_OUTPUT_DIR = "r_ex_post_evaluation"
+
+function exPostRangeOutputDir(run_range, configuredOutputDir)::String
+    configuredOutputDir !== nothing && return String(configuredOutputDir)
+    collected = Int.(collect(run_range))
+    isempty(collected) && error("exPostRunRange e vuoto")
+    return "r$(minimum(collected))_$(maximum(collected))_ex_post"
+end
 
 const EX_POST_KPI_SPECS = [
     (column = :simtime, title = "Total Makespan", higher_is_better = false),
@@ -56,6 +66,9 @@ const EX_POST_CUT_QUANTILES = [0.25, 0.50, 0.75]
 
 function ex_post_mode_label(run_mode::Symbol)::String
     run_mode == :static && return "static"
+    run_mode == :adaptive && return "adaptive"
+    run_mode == :combined_first && return "combined_first"
+    run_mode == :combined_second && return "combined_second"
     run_mode == :adaptive_spt && return "adaptive_queue"
     run_mode == :adaptive_slack && return "adaptive_slack"
     run_mode == :adaptive_combined_spt_first && return "combined_queue_first"
@@ -1129,6 +1142,97 @@ function performExPostEvaluation(; input_dirs::Dict{Symbol, String}, output_dir:
     )
 
     println("##### ex-post evaluation outputs saved in $(output_dir) #####")
+end
+
+function exPostRunNumber(path::String)::Union{Nothing, Int}
+    m = match(r"^r(\d+)_", basename(path))
+    m === nothing && return nothing
+    return parse(Int, m.captures[1])
+end
+
+function exPostInputDirsFromRange(run_range; root::String = ".")::Dict{Symbol, String}
+    wanted = Set(Int.(collect(run_range)))
+    inputDirs = Dict{Symbol, String}()
+
+    for item in readdir(root)
+        fullPath = joinpath(root, item)
+        isdir(fullPath) || continue
+        endswith(item, "_evaluation") && continue
+
+        number = exPostRunNumber(item)
+        number === nothing && continue
+        number in wanted || continue
+
+        if occursin("_static", item)
+            inputDirs[:static] = item
+
+        elseif occursin("_adaptive_", item)
+            if occursin("_spt", item)
+                inputDirs[:adaptive_first] = item
+            elseif occursin("_edd", item)
+                inputDirs[:adaptive_second] = item
+            else
+                inputDirs[Symbol("adaptive_", number)] = item
+            end
+
+        elseif occursin("_combined_", item)
+            if occursin("_spt_first_edd", item)
+                inputDirs[:combined_first] = item
+            elseif occursin("_edd_first_spt", item)
+                inputDirs[:combined_second] = item
+            else
+                inputDirs[Symbol("combined_", number)] = item
+            end
+        end
+    end
+
+    isempty(inputDirs) && error("No ex-post input directories found for run range $(collect(run_range))")
+
+    return inputDirs
+end
+
+function ensureExPostAnovaForRange!(inputDirs::Dict{Symbol, String})
+    for path in values(inputDirs)
+        requiredOutput = Main.orchestration.requiredAnovaOutput(path)
+        isfile(requiredOutput) && continue
+        println("##### ANOVA summary missing for ex-post: $(requiredOutput) #####")
+        println("##### running ANOVA first on $(path) #####")
+        Main.showanova.performAnova(path)
+    end
+end
+
+
+function performRangeExPostEvaluation(;
+    run_range = exPostRunRange,
+    output_dir = exPostOutputDir,
+)
+    resolvedOutputDir = exPostRangeOutputDir(run_range, output_dir)
+
+    println("##### starting range ex-post evaluation ################")
+    println("  run range: $(minimum(Int.(collect(run_range)))):$(maximum(Int.(collect(run_range))))")
+    println("  output dir: $(resolvedOutputDir)")
+
+    inputDirs = exPostInputDirsFromRange(run_range)
+
+    println("### ensuring ANOVA summaries for ex-post input campaigns")
+    ensureExPostAnovaForRange!(inputDirs)
+
+    println("### running full ex-post evaluation with plots")
+    performExPostEvaluation(
+        input_dirs = inputDirs,
+        output_dir = resolvedOutputDir,
+    )
+
+    println("### identifying best policies inside ex-post output")
+    final = Main.findbest.identifyBestPoliciesFromRuns(
+        run_range;
+        output_dir = resolvedOutputDir,
+        prefix = "ex_post",
+    )
+
+    println("##### range ex-post evaluation saved in $(resolvedOutputDir) #####")
+
+    return final
 end
 
 end

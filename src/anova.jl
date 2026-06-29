@@ -9,6 +9,12 @@ using Plots
 using Distributions
 
 using Main.configdata: anovaEffectColors
+using Main.adaptivemetadata: METADATA_COLUMNS,
+                             addAdaptiveMetadataColumns!,
+                             combinedAxisColumnsFromLabels,
+                             singleAxisColumnFromLabels,
+                             thresholdDisplayName,
+                             thresholdEffectPrefix
 
 export performAnova, saveVisualSummary
 
@@ -29,18 +35,9 @@ function orderedPolicies(labels)
     return sort(unique(String.(labels)), by = naturalSortKey)  # usa naturalSortKey!
 end
 
-function parseCombinedScenario(label)
-    match_scenario = match(r"^queue_(\d+)__slack_([0-9]+(?:\.[0-9]+)?)$", String(label))
-    match_scenario === nothing && return nothing
-    return (
-        queue_threshold = parse(Int, match_scenario.captures[1]),
-        slack_threshold = parse(Float64, match_scenario.captures[2]),
-    )
-end
-
 function isCombinedAnovaCampaign(df::DataFrame)::Bool
     labels = unique(String.(df.policy))
-    !isempty(labels) && all(label -> parseCombinedScenario(label) !== nothing, labels)
+    combinedAxisColumnsFromLabels(labels) !== nothing
 end
 
 function metricSpecs()
@@ -111,7 +108,7 @@ function collectAnovaRefs(outpath::String)
         !isfile(filepath) && continue
 
         df = CSV.read(filepath, DataFrame)
-        if "policy" ∉ names(df)
+        if !("policy" in names(df))
             insertcols!(df, 1, :policy => fill(basename(folder), nrow(df)))
         end
         push!(rows, df)
@@ -184,11 +181,10 @@ function buildAnovaOverview(df::DataFrame, specs)
 end
 
 function addCombinedScenarioColumns!(df::DataFrame)
-    parsed = [parseCombinedScenario(label) for label in df.policy]
-    any(isnothing, parsed) && error("Campagna combinata non valida: alcune policy non sono queue_XXX__slack_Y.Y")
-    df.queue_threshold = [item.queue_threshold for item in parsed]
-    df.slack_threshold = [item.slack_threshold for item in parsed]
-    return df
+    axisColumns = combinedAxisColumnsFromLabels(unique(String.(df.policy)))
+    axisColumns === nothing && error("Campagna combinata non valida: label adaptive non parseabili")
+    addAdaptiveMetadataColumns!(df, :policy)
+    return axisColumns
 end
 
 function safeFTest(effectSS::Float64, effectDf::Int, residualSS::Float64, residualDf::Int)
@@ -217,9 +213,9 @@ function groupedEffectSS(df::DataFrame, metric::Symbol, groupcols, grandMean::Fl
     return total
 end
 
-function residualSSByCell(df::DataFrame, metric::Symbol)::Float64
+function residualSSByCell(df::DataFrame, metric::Symbol, axisColumns::Vector{Symbol})::Float64
     total = 0.0
-    for subdf in groupby(df, [:queue_threshold, :slack_threshold])
+    for subdf in groupby(df, axisColumns)
         values = Float64.(subdf[!, metric])
         cellMean = mean(values)
         total += sum((value - cellMean)^2 for value in values)
@@ -227,35 +223,58 @@ function residualSSByCell(df::DataFrame, metric::Symbol)::Float64
     return total
 end
 
-function buildCombinedGridSummary(df::DataFrame, specs)::DataFrame
-    rows = NamedTuple[]
+function firstValue(subdf::SubDataFrame, column::Symbol)
+    column in propertynames(subdf) || return missing
+    return subdf[1, column]
+end
+
+function dataframeFromDictRows(rows::Vector{Dict{Symbol, Any}})::DataFrame
+    df = DataFrame()
+    for row in rows
+        columns = collect(keys(row))
+        values = Tuple(row[column] for column in columns)
+        push!(df, NamedTuple{Tuple(columns)}(values); cols = :union)
+    end
+    return df
+end
+
+function buildCombinedGridSummary(df::DataFrame, specs, axisColumns::Vector{Symbol})::DataFrame
+    rows = Dict{Symbol, Any}[]
     for spec in specs
         spec.column in propertynames(df) || continue
-        for subdf in groupby(df, [:queue_threshold, :slack_threshold])
+        for subdf in groupby(df, axisColumns)
             values = Float64.(subdf[!, spec.column])
-            push!(rows, (
-                metric = String(spec.column),
-                title = spec.title,
-                queue_threshold = Int(subdf.queue_threshold[1]),
-                slack_threshold = Float64(subdf.slack_threshold[1]),
-                mean = mean(values),
-                std = length(values) > 1 ? std(values) : 0.0,
-                min = minimum(values),
-                max = maximum(values),
-                replications = length(values),
-            ))
+            row = Dict{Symbol, Any}(
+                :metric => String(spec.column),
+                :title => spec.title,
+                :alternative => String(subdf.policy[1]),
+                :mean => mean(values),
+                :std => length(values) > 1 ? std(values) : 0.0,
+                :min => minimum(values),
+                :max => maximum(values),
+                :replications => length(values),
+            )
+            for column in METADATA_COLUMNS
+                row[column] = firstValue(subdf, column)
+            end
+            push!(rows, row)
         end
     end
-    out = DataFrame(rows)
-    !isempty(out) && sort!(out, [:metric, :queue_threshold, :slack_threshold])
+    out = dataframeFromDictRows(rows)
+    !isempty(out) && sort!(out, vcat([:metric], axisColumns))
     return out
 end
 
-function buildCombinedAnovaOverview(df::DataFrame, specs)::DataFrame
-    rows = NamedTuple[]
-    queueLevels = length(unique(df.queue_threshold))
-    slackLevels = length(unique(df.slack_threshold))
-    cellCount = nrow(unique(df[:, [:queue_threshold, :slack_threshold]]))
+function effectColumn(axisColumn::Symbol, suffix::String)::Symbol
+    return Symbol("$(thresholdEffectPrefix(axisColumn))_$(suffix)")
+end
+
+function buildCombinedAnovaOverview(df::DataFrame, specs, axisColumns::Vector{Symbol})::DataFrame
+    rows = Dict{Symbol, Any}[]
+    firstAxis, secondAxis = axisColumns
+    firstLevels = length(unique(df[!, firstAxis]))
+    secondLevels = length(unique(df[!, secondAxis]))
+    cellCount = nrow(unique(df[:, axisColumns]))
 
     for spec in specs
         spec.column in propertynames(df) || continue
@@ -263,43 +282,44 @@ function buildCombinedAnovaOverview(df::DataFrame, specs)::DataFrame
         totalCount = length(values)
         grandMean = mean(values)
         ssTotal = sum((value - grandMean)^2 for value in values)
-        ssQueue = groupedEffectSS(df, spec.column, :queue_threshold, grandMean)
-        ssSlack = groupedEffectSS(df, spec.column, :slack_threshold, grandMean)
-        ssCell = groupedEffectSS(df, spec.column, [:queue_threshold, :slack_threshold], grandMean)
-        ssInteraction = max(ssCell - ssQueue - ssSlack, 0.0)
-        ssResidual = residualSSByCell(df, spec.column)
+        ssFirst = groupedEffectSS(df, spec.column, firstAxis, grandMean)
+        ssSecond = groupedEffectSS(df, spec.column, secondAxis, grandMean)
+        ssCell = groupedEffectSS(df, spec.column, axisColumns, grandMean)
+        ssInteraction = max(ssCell - ssFirst - ssSecond, 0.0)
+        ssResidual = residualSSByCell(df, spec.column, axisColumns)
 
-        dfQueue = queueLevels - 1
-        dfSlack = slackLevels - 1
-        dfInteraction = dfQueue * dfSlack
+        dfFirst = firstLevels - 1
+        dfSecond = secondLevels - 1
+        dfInteraction = dfFirst * dfSecond
         dfResidual = totalCount - cellCount
 
-        queueTest = safeFTest(ssQueue, dfQueue, ssResidual, dfResidual)
-        slackTest = safeFTest(ssSlack, dfSlack, ssResidual, dfResidual)
+        firstTest = safeFTest(ssFirst, dfFirst, ssResidual, dfResidual)
+        secondTest = safeFTest(ssSecond, dfSecond, ssResidual, dfResidual)
         interactionTest = safeFTest(ssInteraction, dfInteraction, ssResidual, dfResidual)
 
         denominator = ssTotal > 0.0 ? ssTotal : 1.0
-        push!(rows, (
-            metric = String(spec.column),
-            title = spec.title,
-            queue_f_statistic = queueTest.f_statistic,
-            queue_p_value = queueTest.p_value,
-            queue_eta_squared = ssQueue / denominator,
-            slack_f_statistic = slackTest.f_statistic,
-            slack_p_value = slackTest.p_value,
-            slack_eta_squared = ssSlack / denominator,
-            interaction_f_statistic = interactionTest.f_statistic,
-            interaction_p_value = interactionTest.p_value,
-            interaction_eta_squared = ssInteraction / denominator,
-            residual_eta_squared = ssResidual / denominator,
-            queue_levels = queueLevels,
-            slack_levels = slackLevels,
-            grid_points = cellCount,
-            replication_count = totalCount,
-            residual_df = dfResidual,
-        ))
+        row = Dict{Symbol, Any}(
+            :metric => String(spec.column),
+            :title => spec.title,
+            effectColumn(firstAxis, "f_statistic") => firstTest.f_statistic,
+            effectColumn(firstAxis, "p_value") => firstTest.p_value,
+            effectColumn(firstAxis, "eta_squared") => ssFirst / denominator,
+            effectColumn(secondAxis, "f_statistic") => secondTest.f_statistic,
+            effectColumn(secondAxis, "p_value") => secondTest.p_value,
+            effectColumn(secondAxis, "eta_squared") => ssSecond / denominator,
+            :interaction_f_statistic => interactionTest.f_statistic,
+            :interaction_p_value => interactionTest.p_value,
+            :interaction_eta_squared => ssInteraction / denominator,
+            :residual_eta_squared => ssResidual / denominator,
+            effectColumn(firstAxis, "levels") => firstLevels,
+            effectColumn(secondAxis, "levels") => secondLevels,
+            :grid_points => cellCount,
+            :replication_count => totalCount,
+            :residual_df => dfResidual,
+        )
+        push!(rows, row)
     end
-    return DataFrame(rows)
+    return dataframeFromDictRows(rows)
 end
 
 function pValueStrength(pValue::Float64)::Float64
@@ -308,20 +328,23 @@ function pValueStrength(pValue::Float64)::Float64
     return min(-log10(pValue), 16.0)
 end
 
-function saveCombinedAnovaEffectPlot(outpath::String, overview::DataFrame)
+function saveCombinedAnovaEffectPlot(outpath::String, overview::DataFrame, axisColumns::Vector{Symbol})
+    firstAxis, secondAxis = axisColumns
     titles = String.(overview.title)
     effects = hcat(
-        Float64.(overview.queue_eta_squared),
-        Float64.(overview.slack_eta_squared),
+        Float64.(overview[!, effectColumn(firstAxis, "eta_squared")]),
+        Float64.(overview[!, effectColumn(secondAxis, "eta_squared")]),
         Float64.(overview.interaction_eta_squared),
         Float64.(overview.residual_eta_squared),
     )
+    firstLabel = thresholdDisplayName(firstAxis)
+    secondLabel = thresholdDisplayName(secondAxis)
 
     p = groupedbar(
         titles,
         effects;
         bar_position = :stack,
-        label = ["Queue threshold" "Slack threshold" "Queue x Slack" "Residual"],
+        label = [firstLabel secondLabel "$(firstLabel) x $(secondLabel)" "Residual"],
         color = [
             anovaEffectColors.queue anovaEffectColors.slack anovaEffectColors.interaction anovaEffectColors.residual
         ],
@@ -339,12 +362,15 @@ function saveCombinedAnovaEffectPlot(outpath::String, overview::DataFrame)
     savefig(p, joinpath(outpath, "00.combined_anova_effects.png"))
 end
 
-function saveCombinedAnovaPValuePlot(outpath::String, overview::DataFrame)
+function saveCombinedAnovaPValuePlot(outpath::String, overview::DataFrame, axisColumns::Vector{Symbol})
+    firstAxis, secondAxis = axisColumns
     titles = String.(overview.title)
-    effects = ["Queue threshold", "Slack threshold", "Queue x Slack"]
+    firstLabel = thresholdDisplayName(firstAxis)
+    secondLabel = thresholdDisplayName(secondAxis)
+    effects = [firstLabel, secondLabel, "$(firstLabel) x $(secondLabel)"]
     strengths = hcat(
-        pValueStrength.(Float64.(overview.queue_p_value)),
-        pValueStrength.(Float64.(overview.slack_p_value)),
+        pValueStrength.(Float64.(overview[!, effectColumn(firstAxis, "p_value")])),
+        pValueStrength.(Float64.(overview[!, effectColumn(secondAxis, "p_value")])),
         pValueStrength.(Float64.(overview.interaction_p_value)),
     )'
 
@@ -370,23 +396,25 @@ function saveCombinedAnovaPValuePlot(outpath::String, overview::DataFrame)
     savefig(p, joinpath(outpath, "00.combined_anova_pvalues.png"))
 end
 
-function saveCombinedAnovaVisuals(outpath::String, overview::DataFrame)
+function saveCombinedAnovaVisuals(outpath::String, overview::DataFrame, axisColumns::Vector{Symbol})
     isempty(overview) && return
     println("##### salvando grafici ANOVA combinata #####")
-    saveCombinedAnovaEffectPlot(outpath, overview)
-    saveCombinedAnovaPValuePlot(outpath, overview)
+    saveCombinedAnovaEffectPlot(outpath, overview, axisColumns)
+    saveCombinedAnovaPValuePlot(outpath, overview, axisColumns)
 end
 
 function isOneWayAdaptiveScenario(df::DataFrame)::Bool
     labels = unique(String.(df.policy))
-    !isempty(labels) && all(label -> startswith(label, "queue_") || startswith(label, "slack_"), labels)
+    singleAxisColumnFromLabels(labels) !== nothing
 end
 
 function oneWayFactorInfo(df::DataFrame)
     if isOneWayAdaptiveScenario(df)
+        axisColumn = singleAxisColumnFromLabels(unique(String.(df.policy)))
+        axisLabel = thresholdDisplayName(axisColumn)
         return (
-            label = "Scenario effect",
-            title = "ANOVA - Scenario Explained Variation By KPI",
+            label = "$(axisLabel) effect",
+            title = "ANOVA - $(axisLabel) Explained Variation By KPI",
             effect_file = "00.anova_scenario_effects.png",
             pvalue_file = "00.anova_scenario_pvalues.png",
         )
@@ -463,13 +491,13 @@ end
 
 function performCombinedAnova(outpath::String, df::DataFrame, specs)
     println("##### campagna combinata rilevata: uso analisi DOE/surface #####")
-    addCombinedScenarioColumns!(df)
-    gridSummary = buildCombinedGridSummary(df, specs)
-    overview = buildCombinedAnovaOverview(df, specs)
+    axisColumns = addCombinedScenarioColumns!(df)
+    gridSummary = buildCombinedGridSummary(df, specs, axisColumns)
+    overview = buildCombinedAnovaOverview(df, specs, axisColumns)
 
     CSV.write(joinpath(outpath, "00.combined_grid_summary.csv"), gridSummary)
     CSV.write(joinpath(outpath, "00.combined_anova_overview.csv"), overview)
-    saveCombinedAnovaVisuals(outpath, overview)
+    saveCombinedAnovaVisuals(outpath, overview, axisColumns)
     println("##### combined ANOVA summary completato ####")
 end
 
@@ -682,6 +710,7 @@ function performAnova(outpath::String)
 
     dfOverview = buildAnovaOverview(df, specs)
     dfPolicySummary = buildPolicySummary(df, specs)
+    addAdaptiveMetadataColumns!(dfPolicySummary, :policy)
     overviewLookup = buildAnovaOverviewLookup(dfOverview)
 
     CSV.write(joinpath(outpath, "00.anova_overview.csv"), dfOverview)
