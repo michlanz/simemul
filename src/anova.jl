@@ -4,6 +4,7 @@ using CSV
 using DataFrames
 using Statistics
 ENV["GKSwstype"] = "100" # Save plots without opening GR windows.
+
 using StatsPlots
 using Plots
 using Distributions
@@ -16,12 +17,18 @@ using Main.adaptivemetadata: METADATA_COLUMNS,
                              thresholdDisplayName,
                              thresholdEffectPrefix
 
+
+function folder_name(folder::AbstractString)
+    return basename(folder)
+end
+
 export performAnova, saveVisualSummary
 
 const anovaHighlightColors = (
     best = :green3,
     worst = :crimson,
 )
+
 
 function naturalSortKey(label)::Tuple
     text = String(label)
@@ -109,7 +116,7 @@ function collectAnovaRefs(outpath::String)
 
         df = CSV.read(filepath, DataFrame)
         if !("policy" in names(df))
-            insertcols!(df, 1, :policy => fill(basename(folder), nrow(df)))
+            insertcols!(df, 1, :policy => fill(folder_name(folder), nrow(df)))
         end
         push!(rows, df)
     end
@@ -269,9 +276,14 @@ function effectColumn(axisColumn::Symbol, suffix::String)::Symbol
     return Symbol("$(thresholdEffectPrefix(axisColumn))_$(suffix)")
 end
 
+function firstTwoAxes(axisColumns::Vector{Symbol})::Tuple{Symbol, Symbol}
+    length(axisColumns) >= 2 || error("Servono due assi per l'ANOVA combinata")
+    return axisColumns[1], axisColumns[2]
+end
+
 function buildCombinedAnovaOverview(df::DataFrame, specs, axisColumns::Vector{Symbol})::DataFrame
     rows = Dict{Symbol, Any}[]
-    firstAxis, secondAxis = axisColumns
+    firstAxis, secondAxis = firstTwoAxes(axisColumns)
     firstLevels = length(unique(df[!, firstAxis]))
     secondLevels = length(unique(df[!, secondAxis]))
     cellCount = nrow(unique(df[:, axisColumns]))
@@ -298,25 +310,34 @@ function buildCombinedAnovaOverview(df::DataFrame, specs, axisColumns::Vector{Sy
         interactionTest = safeFTest(ssInteraction, dfInteraction, ssResidual, dfResidual)
 
         denominator = ssTotal > 0.0 ? ssTotal : 1.0
+        firstFColumn = effectColumn(firstAxis, "f_statistic")
+        firstPColumn = effectColumn(firstAxis, "p_value")
+        firstEtaColumn = effectColumn(firstAxis, "eta_squared")
+        firstLevelsColumn = effectColumn(firstAxis, "levels")
+        secondFColumn = effectColumn(secondAxis, "f_statistic")
+        secondPColumn = effectColumn(secondAxis, "p_value")
+        secondEtaColumn = effectColumn(secondAxis, "eta_squared")
+        secondLevelsColumn = effectColumn(secondAxis, "levels")
+
         row = Dict{Symbol, Any}(
             :metric => String(spec.column),
             :title => spec.title,
-            effectColumn(firstAxis, "f_statistic") => firstTest.f_statistic,
-            effectColumn(firstAxis, "p_value") => firstTest.p_value,
-            effectColumn(firstAxis, "eta_squared") => ssFirst / denominator,
-            effectColumn(secondAxis, "f_statistic") => secondTest.f_statistic,
-            effectColumn(secondAxis, "p_value") => secondTest.p_value,
-            effectColumn(secondAxis, "eta_squared") => ssSecond / denominator,
             :interaction_f_statistic => interactionTest.f_statistic,
             :interaction_p_value => interactionTest.p_value,
             :interaction_eta_squared => ssInteraction / denominator,
             :residual_eta_squared => ssResidual / denominator,
-            effectColumn(firstAxis, "levels") => firstLevels,
-            effectColumn(secondAxis, "levels") => secondLevels,
             :grid_points => cellCount,
             :replication_count => totalCount,
             :residual_df => dfResidual,
         )
+        row[firstFColumn] = firstTest.f_statistic
+        row[firstPColumn] = firstTest.p_value
+        row[firstEtaColumn] = ssFirst / denominator
+        row[firstLevelsColumn] = firstLevels
+        row[secondFColumn] = secondTest.f_statistic
+        row[secondPColumn] = secondTest.p_value
+        row[secondEtaColumn] = ssSecond / denominator
+        row[secondLevelsColumn] = secondLevels
         push!(rows, row)
     end
     return dataframeFromDictRows(rows)
@@ -329,11 +350,13 @@ function pValueStrength(pValue::Float64)::Float64
 end
 
 function saveCombinedAnovaEffectPlot(outpath::String, overview::DataFrame, axisColumns::Vector{Symbol})
-    firstAxis, secondAxis = axisColumns
+    firstAxis, secondAxis = firstTwoAxes(axisColumns)
     titles = String.(overview.title)
+    firstEtaColumn = effectColumn(firstAxis, "eta_squared")
+    secondEtaColumn = effectColumn(secondAxis, "eta_squared")
     effects = hcat(
-        Float64.(overview[!, effectColumn(firstAxis, "eta_squared")]),
-        Float64.(overview[!, effectColumn(secondAxis, "eta_squared")]),
+        Float64.(overview[!, firstEtaColumn]),
+        Float64.(overview[!, secondEtaColumn]),
         Float64.(overview.interaction_eta_squared),
         Float64.(overview.residual_eta_squared),
     )
@@ -363,14 +386,16 @@ function saveCombinedAnovaEffectPlot(outpath::String, overview::DataFrame, axisC
 end
 
 function saveCombinedAnovaPValuePlot(outpath::String, overview::DataFrame, axisColumns::Vector{Symbol})
-    firstAxis, secondAxis = axisColumns
+    firstAxis, secondAxis = firstTwoAxes(axisColumns)
     titles = String.(overview.title)
     firstLabel = thresholdDisplayName(firstAxis)
     secondLabel = thresholdDisplayName(secondAxis)
     effects = [firstLabel, secondLabel, "$(firstLabel) x $(secondLabel)"]
+    firstPColumn = effectColumn(firstAxis, "p_value")
+    secondPColumn = effectColumn(secondAxis, "p_value")
     strengths = hcat(
-        pValueStrength.(Float64.(overview[!, effectColumn(firstAxis, "p_value")])),
-        pValueStrength.(Float64.(overview[!, effectColumn(secondAxis, "p_value")])),
+        pValueStrength.(Float64.(overview[!, firstPColumn])),
+        pValueStrength.(Float64.(overview[!, secondPColumn])),
         pValueStrength.(Float64.(overview.interaction_p_value)),
     )'
 
@@ -513,29 +538,31 @@ function buildAnovaOverviewLookup(dfOverview::DataFrame)
     return lookup
 end
 
+function policySummaryRow(spec, policy::String, values::Vector{Float64})
+    return (
+        metric = String(spec.column),
+        title = spec.title,
+        policy = policy,
+        mean = mean(values),
+        std = length(values) > 1 ? std(values) : 0.0,
+        median = median(values),
+        p10 = quantile(values, 0.10),
+        p90 = quantile(values, 0.90),
+        min = minimum(values),
+        max = maximum(values),
+        replications = length(values),
+    )
+end
+
 function buildPolicySummary(df::DataFrame, specs)
     rows = NamedTuple[]
     policies = orderedPolicies(df.policy)
 
     for spec in specs
-        policyStats = NamedTuple[]
-        for policy in policies
-            values = Float64.(df[df.policy .== policy, spec.column])
-            push!(policyStats, (
-                metric = String(spec.column),
-                title = spec.title,
-                policy = policy,
-                mean = mean(values),
-                std = length(values) > 1 ? std(values) : 0.0,
-                median = median(values),
-                p10 = quantile(values, 0.10),
-                p90 = quantile(values, 0.90),
-                min = minimum(values),
-                max = maximum(values),
-                replications = length(values),
-            ))
-        end
-
+        policyStats = [
+            policySummaryRow(spec, policy, Float64.(df[df.policy .== policy, spec.column]))
+            for policy in policies
+        ]
         means = [row.mean for row in policyStats]
         highlightRoles = computeHighlightRoles(means, spec.higherIsBetter)
 

@@ -1,11 +1,11 @@
 module coresimulation
 
-using ..StableRNGs
-using ..ResumableFunctions
-using ..CSV
-using ..ConcurrentSim
-using ..DataFrames
-using ..Distributions
+using StableRNGs
+using ResumableFunctions
+using CSV
+using ConcurrentSim
+using DataFrames
+using Distributions
 
 using Main.configdata: SimConfig
 using ..inputdata: ImportData
@@ -14,6 +14,9 @@ using ..selectionrules
 using ..postprocess
 
 export runSaveSim, runManySim, saveResults
+
+const ready_event_constructor = Event
+
 
 # ===== SIMULATION FUNCTIONS =====
 
@@ -41,6 +44,7 @@ function batchDisplayName(policyName::String)::String
 
     return lowercase(replace(replace(policyName, "__" => " "), "_" => " "))
 end
+
 
 function runSaveSim(cfg::SimConfig, importData::ImportData, seeds::Vector{UInt32}, policyName::String, priorityRule, outdir::String)
     println("##### batch: $(batchDisplayName(policyName)) #####")
@@ -93,6 +97,7 @@ function runManySim(cfg::SimConfig, importData::ImportData, seeds::Vector{UInt32
 end
 
 
+
 function oneSimulation!(sim::Environment, rng::StableRNG, clients::Vector{Client}, dash::Dash, priorityRule)
     for client in clients
         @process processClient!(sim, rng, client, clients, dash, priorityRule)
@@ -121,7 +126,7 @@ end
     while client.current_station <= length(client.route)
         station = client.route[client.current_station]
 
-        readyEvent = Event(env)
+        readyEvent = ready_event_constructor(env)
         push!(station.waiting_queue, WaitingTicket(client.id, readyEvent))
         logging(:enterqueue, env, dash, client, station.name, length(station.waiting_queue))
 

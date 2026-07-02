@@ -3,6 +3,7 @@ module showevaluation
 using CSV
 using DataFrames
 ENV["GKSwstype"] = "100" # Save plots without opening GR windows.
+
 using Plots
 using Statistics
 
@@ -14,6 +15,11 @@ using Main.adaptivemetadata: METADATA_COLUMNS,
                              scenarioAxisColumns,
                              scenarioMetadataTuple,
                              thresholdDisplayName
+
+
+function folder_name(folder::AbstractString)
+    return basename(folder)
+end
 
 export performEvaluation
 
@@ -165,7 +171,7 @@ function load_campaign_timing(input_dir::String)::DataFrame
         isfile(timing_file) || continue
         df = CSV.read(timing_file, DataFrame)
         if !(:scenario in propertynames(df))
-            insertcols!(df, 1, :scenario => fill(basename(folder), nrow(df)))
+            insertcols!(df, 1, :scenario => fill(folder_name(folder), nrow(df)))
         end
         if !(:type in propertynames(df))
             insertcols!(df, 2, :type => fill("scenario", nrow(df)))
@@ -232,7 +238,7 @@ function combined_scenario_infos(results_dir::String)
     infos = NamedTuple[]
     for folder in readdir(results_dir; join = true)
         !isdir(folder) && continue
-        label = basename(folder)
+        label = folder_name(folder)
         axisColumns = scenarioAxisColumns(label)
         length(axisColumns) == 2 || continue
         isfile(joinpath(folder, "anovaRef.csv")) || continue
@@ -254,7 +260,7 @@ function is_combined_campaign(results_dir::String)::Bool
     for folder in readdir(results_dir; join = true)
         !isdir(folder) && continue
         isfile(joinpath(folder, "anovaRef.csv")) || continue
-        push!(labels, basename(folder))
+        push!(labels, folder_name(folder))
     end
     return !isempty(labels) && combinedAxisColumnsFromLabels(labels) !== nothing
 end
@@ -276,7 +282,7 @@ function policy_infos(results_dir::String)
     infos = NamedTuple[]
     for folder in readdir(results_dir; join = true)
         !isdir(folder) && continue
-        label = basename(folder)
+        label = folder_name(folder)
         startswith(label, ".") && continue
         startswith(label, "_") && continue
         isfile(joinpath(folder, "punctuality_summary.csv")) || continue

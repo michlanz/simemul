@@ -1,8 +1,8 @@
 module structures
 
-using ..Distributions
-using ..ConcurrentSim
-using ..StableRNGs
+using Distributions
+using ConcurrentSim
+using StableRNGs
 using Main.configdata: SimConfig
 
 
@@ -124,8 +124,8 @@ function sampleProcessingTimes(
     cv = cfg.processingTimeCV
 
     return [
-        λ <= 0.0 ? 0.0 : rand(rng, truncated(Normal(λ, cv * λ); lower = 0.0))
-        for λ in expectedTimes
+        lambda <= 0.0 ? 0.0 : rand(rng, truncated(Normal(lambda, cv * lambda); lower = 0.0))
+        for lambda in expectedTimes
     ]
 end
 

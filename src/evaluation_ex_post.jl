@@ -3,6 +3,7 @@ module showexpost
 using CSV
 using DataFrames
 ENV["GKSwstype"] = "100"
+
 using Plots
 using StatsPlots
 using Statistics
@@ -15,6 +16,11 @@ using Main.showevaluation: pareto_tolerance_percent,
                            reset_output_dir
 using Main.configdata: exPostOutputDir,
                        exPostRunRange
+
+
+function folder_name(folder::AbstractString)
+    return basename(folder)
+end
 
 export performExPostEvaluation,
        performRangeExPostEvaluation
@@ -218,7 +224,7 @@ function collect_campaign_anovaref(input_dir::String, run_mode::Symbol)::DataFra
     for folder in sort(readdir(input_dir; join = true); by = basename)
         isdir(folder) || continue
 
-        folder_label = basename(folder)
+        folder_label = folder_name(folder)
 
         if selected_source_policies !== nothing && !(folder_label in selected_source_policies)
             continue

@@ -1,9 +1,9 @@
 module inputdata
 
-using ..JSON3
-using ..DataFrames
-using ..CSV
-using ..Distributions
+using JSON3
+using DataFrames
+using CSV
+using Distributions
 using Main.configdata: SimConfig
 
 export ImportData, loadImportData

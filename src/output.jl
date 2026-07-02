@@ -1,8 +1,8 @@
 module postprocess
 
-using ..DataFrames
-using ..Statistics
-using ..DataFrames: sort!
+using DataFrames
+using Statistics
+using DataFrames: sort!
 using ..structures: Dash, AdvancementLog
 
 export postprocessDF,

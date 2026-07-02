@@ -3,10 +3,16 @@ module showdash
 using CSV
 using DataFrames
 ENV["GKSwstype"] = "100" # Save plots without opening GR windows.
+
 using StatsPlots
 using Plots
 
 using Main.configdata: DashboardColors, makespanComponentColors, seriesColors
+
+
+function folder_name(folder::AbstractString)
+    return basename(folder)
+end
 
 export plotresults,
        plot_wip_system_buckets,
@@ -485,7 +491,7 @@ function savefigs(outpath::String)
     subfolders = sort(readdir(outpath; join=true))
     for folder in subfolders
         if isdir(folder)
-            println("###### salvo figure in $(basename(folder)) #############")
+            println("###### salvo figure in $(folder_name(folder)) #############")
             plotresults(folder)
         end
     end

@@ -1,7 +1,7 @@
 module selectionrules
 
-using ..StableRNGs
-using ..ConcurrentSim
+using StableRNGs
+using ConcurrentSim
 using ..structures
 
 export selectNext,
@@ -26,6 +26,7 @@ struct SelectionDecision
     queue_position::Int64
     effective_policy::Union{Nothing, Symbol}
 end
+
 
 struct AdaptiveTrigger
     policy::Symbol
@@ -134,18 +135,18 @@ function queueMinSlack(env::Environment, station::Station, clients::Vector{Clien
 end
 
 function selectWithAdaptivePriority(priority::Symbol, env::Environment, station::Station, clients::Vector{Client}, rng::StableRNG)::SelectionDecision
-    priority == :SIRO && return SelectionDecision(siroRule(env, station, clients, rng), :SIRO)
-    priority == :FIFO && return SelectionDecision(fifoRule(env, station, clients, rng), :FIFO)
-    priority == :LIFO && return SelectionDecision(lifoRule(env, station, clients, rng), :LIFO)
-    priority == :SPT && return SelectionDecision(sptRule(env, station, clients, rng), :SPT)
-    priority == :LPT && return SelectionDecision(lptRule(env, station, clients, rng), :LPT)
-    priority == :EDD && return SelectionDecision(eddRule(env, station, clients, rng), :EDD)
-    priority == :MINSLACK && return SelectionDecision(minSlackRule(env, station, clients, rng), :MINSLACK)
-    priority == :CRITICALRATIO && return SelectionDecision(criticalRatioRule(env, station, clients, rng), :CRITICALRATIO)
-    priority == :FOPNR && return SelectionDecision(fopnrRule(env, station, clients, rng), :FOPNR)
-    priority == :MOPNR && return SelectionDecision(mopnrRule(env, station, clients, rng), :MOPNR)
-    priority == :LWRK && return SelectionDecision(lwrkRule(env, station, clients, rng), :LWRK)
-    priority == :MWRK && return SelectionDecision(mwrkRule(env, station, clients, rng), :MWRK)
+    priority == :SIRO && return SelectionDecision(Int64(siroRule(env, station, clients, rng)), :SIRO)
+    priority == :FIFO && return SelectionDecision(Int64(fifoRule(env, station, clients, rng)), :FIFO)
+    priority == :LIFO && return SelectionDecision(Int64(lifoRule(env, station, clients, rng)), :LIFO)
+    priority == :SPT && return SelectionDecision(Int64(sptRule(env, station, clients, rng)), :SPT)
+    priority == :LPT && return SelectionDecision(Int64(lptRule(env, station, clients, rng)), :LPT)
+    priority == :EDD && return SelectionDecision(Int64(eddRule(env, station, clients, rng)), :EDD)
+    priority == :MINSLACK && return SelectionDecision(Int64(minSlackRule(env, station, clients, rng)), :MINSLACK)
+    priority == :CRITICALRATIO && return SelectionDecision(Int64(criticalRatioRule(env, station, clients, rng)), :CRITICALRATIO)
+    priority == :FOPNR && return SelectionDecision(Int64(fopnrRule(env, station, clients, rng)), :FOPNR)
+    priority == :MOPNR && return SelectionDecision(Int64(mopnrRule(env, station, clients, rng)), :MOPNR)
+    priority == :LWRK && return SelectionDecision(Int64(lwrkRule(env, station, clients, rng)), :LWRK)
+    priority == :MWRK && return SelectionDecision(Int64(mwrkRule(env, station, clients, rng)), :MWRK)
     error("Priorita adaptive non valida: $(priority)")
 end
 
@@ -260,7 +261,7 @@ function lwrkRule(env::Environment, station::Station, clients::Vector{Client}, r
 
     for pos in eachindex(station.waiting_queue)
         client = clients[station.waiting_queue[pos].client_id]
-        remaining_work = sum(client.processing_time[client.current_station:end])
+        remaining_work = sum(client.expected_processing_time[client.current_station:end])
 
         if remaining_work < leastWork
             selectedNext = pos
@@ -277,7 +278,7 @@ function mwrkRule(env::Environment, station::Station, clients::Vector{Client}, r
 
     for pos in eachindex(station.waiting_queue)
         client = clients[station.waiting_queue[pos].client_id]
-        remaining_work = sum(client.processing_time[client.current_station:end])
+        remaining_work = sum(client.expected_processing_time[client.current_station:end])
 
         if remaining_work > mostWork
             selectedNext = pos
@@ -289,7 +290,7 @@ end
 
 
 
-selectionRules = [
+const selectionRules = SelectionPolicy[
     SelectionPolicy(:SIRO, "01.SIRO", siroRule),
     SelectionPolicy(:FIFO, "02.FIFO", fifoRule),
     SelectionPolicy(:LIFO, "03.LIFO", lifoRule),

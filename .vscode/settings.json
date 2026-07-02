@@ -1,3 +1,4 @@
 {
-    "julia.environmentPath": "/home/michela/Desktop/progetti/simemul"
+    "julia.environmentPath":  "${workspaceFolder}",
+    "julia.lint.call":  true
 }
